@@ -1,0 +1,38 @@
+# Universal RAG — despliegue con docker compose (Fase 4)
+#
+#   docker compose up -d --build
+#   curl http://localhost:8100/health
+#
+# Configura RAG_API_KEY (y las demás variables) en un archivo .env junto a este
+# docker-compose.yml (ver .env.example).
+services:
+  rag:
+    build: .
+    image: universal-rag:0.4.0
+    container_name: universal-rag
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    volumes:
+      - ./data:/app/data
+    environment:
+      # Seguridad (Fase 4): si se define, la API exige X-API-Key o Bearer
+      RAG_API_KEY: ${RAG_API_KEY:-}
+      # Colección por defecto y almacenamiento
+      RAG_DEFAULT_COLLECTION: ${RAG_DEFAULT_COLLECTION:-default}
+      RAG_STORE_PROVIDER: ${RAG_STORE_PROVIDER:-chroma}
+      RAG_CHROMA_PATH: /app/data/chroma
+      # Jobs asíncronos
+      RAG_JOBS_WORKERS: ${RAG_JOBS_WORKERS:-2}
+      RAG_JOBS_MAX_HISTORY: ${RAG_JOBS_MAX_HISTORY:-200}
+      # LLM (opcional) — descomenta y define en .env
+      # RAG_LLM_PROVIDER: openai-compat
+      # RAG_LLM_BASE_URL: ${RAG_LLM_BASE_URL}
+      # RAG_LLM_API_KEY: ${RAG_LLM_API_KEY}
+      # RAG_LLM_MODEL: ${RAG_LLM_MODEL}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

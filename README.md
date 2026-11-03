@@ -1,6 +1,6 @@
 # Universal RAG
 
-> 🧩 **Pipeline plugable de Retrieval-Augmented Generation** — ingesta universal (texto, archivos, URLs, **audio, video, YouTube, Google Drive**), búsqueda **vectorial o híbrida (BM25 + vectores)** con reranking opcional, evaluación de calidad y respuestas con **citas verificables, incluidas citas por minuto** en audio/video.
+> 🧩 **Pipeline plugable de Retrieval-Augmented Generation** — ingesta universal (texto, archivos, URLs, **audio, video, YouTube, Google Drive**), búsqueda **vectorial o híbrida (BM25 + vectores)** con reranking opcional, evaluación de calidad, **colecciones múltiples, jobs asíncronos, auth por API key** y respuestas con **citas verificables, incluidas citas por minuto** en audio/video.
 
 Hermano de [Universal MCP](https://github.com/rtostudioco/universal-mcp): misma filosofía **"universal"** — núcleo estable, capacidades que se agregan soltando carpetas, sin tocar el servidor.
 
@@ -24,6 +24,12 @@ Hermano de [Universal MCP](https://github.com/rtostudioco/universal-mcp): misma 
 | 🎯 **Reranking (Fase 3)** | Reranker plugable: cross-encoder local (`bge-reranker`, multilingüe) reordena los candidatos con máxima precisión. |
 | 📊 **Evaluación (Fase 3)** | Golden sets JSONL con **precision/recall/MRR/hit-rate** — mide la calidad antes de tocar producción. |
 | 🗨️ **Mini chat UI (Fase 3)** | Chat web incluido (`http://localhost:8100/`), autocontenido y sin CDNs, con citas y minutos visibles. |
+| 📚 **Colecciones múltiples (Fase 4)** | Bases de conocimiento aisladas (`legal`, `faq`, `energy`…) sobre un mismo despliegue: ingesta/consulta por colección en API, CLI y MCP. |
+| 🔄 **Jobs asíncronos (Fase 4)** | `POST /ingest/async` + polling en `GET /jobs/{id}` — ingesta de fuentes lentas (audio, video, lotes) sin bloquear al cliente. |
+| 🔐 **Auth por API key (Fase 4)** | Protege la API con `RAG_API_KEY` (`X-API-Key` o `Bearer`); `/` y `/health` siguen abiertos para monitoreo. |
+| 📈 **Métricas runtime (Fase 4)** | Contadores de peticiones/consultas/ingestas/errores y uptime en `GET /stats`, sin dependencias extra. |
+| 🪶 **Ingesta incremental (Fase 4)** | Huella de contenido (`content_hash`): re-ingerir lo mismo es un no-op (`unchanged`); solo se re-vectoriza lo que cambió. |
+| 🐳 **Docker incluido (Fase 4)** | `Dockerfile` + `docker-compose.yml` con healthcheck y volumen de datos — despliegue en un comando. |
 | 💬 **Generación plugable** | Cualquier endpoint **compatible OpenAI** (OpenAI, z-ai, Ollama, LM Studio, vLLM…) o modo extractivo sin LLM. |
 | 📎 **Citas verificables** | Cada respuesta referencia sus fuentes con `uri`, score y cita textual. |
 | 🎙️ **ASR local (Fase 2)** | faster-whisper corre en tu máquina: MP3/WAV/M4A/MP4/MKV… → transcripción con **citas `[mm:ss–mm:ss]`**. |
@@ -51,6 +57,11 @@ universal-rag ingest "drive://<fileId>"           # → Google Drive (público/c
 
 # Consulta con citas (en media, con minuto exacto)
 universal-rag query "¿cada cuánto se limpian los paneles?"
+
+# Colecciones (Fase 4): bases de conocimiento aisladas
+universal-rag ingest ./contratos/2025.pdf --collection legal
+universal-rag query "¿cláusula de penalización?" --collection legal
+universal-rag collections                        # lista colecciones activas
 
 # Chat interactivo en la terminal
 universal-rag chat
@@ -81,7 +92,20 @@ curl -X POST localhost:8100/ingest -H 'Content-Type: application/json' \
 
 curl -X POST localhost:8100/query -H 'Content-Type: application/json' \
      -d '{"question": "¿qué dijo sobre costos?", "k": 4}'
+
+# Fase 4 — colecciones y jobs asíncronos
+curl -X POST localhost:8100/ingest/text -H 'Content-Type: application/json' \
+     -d '{"text": "…", "title": "Nota", "collection": "legal"}'
+
+curl -X POST localhost:8100/ingest/async -H 'Content-Type: application/json' \
+     -d '{"source": "./podcast-largo.mp3"}'          # → {"job_id": …}
+curl localhost:8100/jobs/<job_id>                     # → estado del job
+
+# Fase 4 — con autenticación (si RAG_API_KEY está definida)
+curl localhost:8100/stats -H 'X-API-Key: <tu-key>'
 ```
+
+Endpoints: `/` · `/health` · `/stats` · `/ingest` · `/ingest/text` · `/ingest/async` · `/jobs` · `/jobs/{id}` · `/query` · `/documents` · `/collections`.
 
 ### Como servidor MCP (Claude Desktop, Universal MCP…)
 
@@ -90,12 +114,21 @@ universal-rag mcp                             # stdio
 universal-rag mcp --transport streamable-http --port 8200
 ```
 
-Herramientas MCP: `rag_ingest`, `rag_ingest_text`, `rag_query`, `rag_stats`, `rag_list_documents`, `rag_delete_document`.
+Herramientas MCP: `rag_ingest`, `rag_ingest_text`, `rag_query`, `rag_stats`, `rag_list_documents`, `rag_delete_document`, `rag_list_collections` — todas aceptan `collection` (Fase 4).
+
+### Docker (Fase 4)
+
+```bash
+docker compose up -d --build
+curl http://localhost:8100/health
+```
+
+Detalles de despliegue (auth, volúmenes, extras `[local]`/`[media]`) en [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 ## 🧪 Python
 
 ```python
-from universal_rag import RAGPipeline
+from universal_rag import CollectionManager, RAGPipeline
 
 rag = RAGPipeline()
 rag.ingest("./docs/contrato.pdf")
@@ -107,6 +140,13 @@ for citation in answer.citations:
     minute = f" {citation.timestamp}" if citation.timestamp else ""
     print(f"  [{citation.source}{minute}] {citation.title} → {citation.quote[:80]}")
 #  [audio 03:12–04:05] Entrevista → ...sobre la cláusula de penalización...
+
+# Fase 4: colecciones aisladas que comparten embedder/generator
+manager = CollectionManager()
+manager.get("legal").ingest("./docs/contrato.pdf")
+manager.get("faq").ingest_text("¿Horario? De 9 a 17.", title="FAQ")
+manager.get("faq").query("¿cuál es el horario?")
+print(manager.list_collections())   # resumen por colección
 ```
 
 ## ⚙️ Configuración (variables `RAG_*`)
@@ -130,6 +170,10 @@ for citation in answer.citations:
 | `RAG_ASR_MODEL` | `base` | Whisper: `tiny` \| `base` \| `small` \| `medium` \| `large-v3` |
 | `RAG_ASR_LANGUAGE` | *(auto)* | `es`, `en`, … (o `language=` por ingesta) |
 | `RAG_CONNECTOR_DIRS` | — | Directorios con conectores externos |
+| `RAG_DEFAULT_COLLECTION` | `default` | Colección activa si no se indica otra (Fase 4) |
+| `RAG_API_KEY` | *(vacío = sin auth)* | Si se define, la API exige `X-API-Key`/`Bearer` (Fase 4) |
+| `RAG_JOBS_WORKERS` | `2` | Hilos del pool de ingesta asíncrona (Fase 4) |
+| `RAG_JOBS_MAX_HISTORY` | `200` | Jobs recordados en memoria (Fase 4) |
 
 Ejemplo con Ollama local:
 
@@ -162,7 +206,8 @@ Detalles en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Búsqueda híbrida
 - **Fase 1 (✅ v0.1.0)** — núcleo + conectores `text`/`file`/`url` + ChromaDB + embeddings locales + API/CLI/MCP.
 - **Fase 2 (✅ v0.2.0)** — conectores `audio` (MP3), `video` (MP4), `youtube` y `drive` con ASR **faster-whisper** local y **citas por minuto**.
 - **Fase 3 (✅ v0.3.0)** — **búsqueda híbrida** (BM25 + vectores, fusión RRF/weighted), **reranking** (cross-encoder local), **evaluación** (precision/recall/MRR con golden sets) y **mini chat UI**.
-- **Fase 4 (futuro)** — multi-usuario/tenants, conectores S3/Notion, reranking con LLM y extracción de tablas.
+- **Fase 4 (✅ v0.4.0)** — **producción y escalado**: colecciones múltiples, jobs asíncronos con polling, auth por API key, métricas runtime, ingesta incremental (skip sin cambios) y despliegue Docker.
+- **Fase 5 (futuro)** — conectores S3/Notion, reranking con LLM y extracción de tablas.
 
 > 💡 **Calidad del ASR**: el modelo `base` es rápido y ligero; para español u otros idiomas no ingleses recomendamos `RAG_ASR_MODEL=small` (o `medium`) — la precisión mejora notablemente. Audio con música de fondo o voces sintéticas degrada la precisión de cualquier Whisper.
 
@@ -171,7 +216,7 @@ Detalles en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Búsqueda híbrida
 ```bash
 git clone https://github.com/rtostudioco/universal-rag && cd universal-rag
 pip install -e ".[dev]"
-pytest                # 159 tests (sin red, sin modelos pesados)
+pytest                # 202 tests (sin red, sin modelos pesados)
 ruff check .
 ```
 

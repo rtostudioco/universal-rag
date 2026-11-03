@@ -49,6 +49,10 @@ class BaseVectorStore(ABC):
     def list_documents(self) -> list[dict[str, Any]]: ...
 
     @abstractmethod
+    def document_hash(self, document_id: str) -> str | None:
+        """Hash de contenido registrado para un documento (ingesta incremental — Fase 4)."""
+
+    @abstractmethod
     def clear(self) -> None: ...
 
     def close(self) -> None:  # noqa: B027 — hook opcional para stores que necesiten liberar recursos
@@ -141,6 +145,13 @@ class InMemoryVectorStore(BaseVectorStore):
                 }
             grouped[doc_id]["chunks"] += 1
         return sorted(grouped.values(), key=lambda d: d["document_id"])
+
+    def document_hash(self, document_id: str) -> str | None:
+        for _, (_, _, meta) in self._entries.items():
+            if meta.get("document_id") == document_id:
+                value = meta.get("content_hash")
+                return str(value) if value is not None else None
+        return None
 
     def clear(self) -> None:
         self._entries.clear()
@@ -284,6 +295,16 @@ class ChromaVectorStore(BaseVectorStore):
                 }
             grouped[doc_id]["chunks"] += 1
         return sorted(grouped.values(), key=lambda d: d["document_id"])
+
+    def document_hash(self, document_id: str) -> str | None:
+        data = self.collection.get(
+            where={"document_id": document_id}, include=["metadatas"], limit=1
+        )
+        metas = data.get("metadatas") or []
+        if not metas:
+            return None
+        value = (metas[0] or {}).get("content_hash")
+        return str(value) if value is not None else None
 
     def clear(self) -> None:
         try:

@@ -26,7 +26,12 @@ from universal_rag.core.models import (
 )
 from universal_rag.core.retriever import Retriever
 from universal_rag.core.store import BaseVectorStore, create_store
-from universal_rag.core.utils import chunk_quote, extract_citation_indexes, get_logger
+from universal_rag.core.utils import (
+    chunk_quote,
+    content_fingerprint,
+    extract_citation_indexes,
+    get_logger,
+)
 
 logger = get_logger("pipeline")
 
@@ -55,10 +60,13 @@ class RAGPipeline:
         )
 
     # ------------------------------------------------------------------ INGEST
-    def ingest(self, source: str, connector: str | None = None, **options: Any) -> IngestResult:
+    def ingest(
+        self, source: str, connector: str | None = None, *, force: bool = False, **options: Any
+    ) -> IngestResult:
         """Ingesta una fuente (ruta, URL, texto…) resolviendo el conector automáticamente.
 
         ``connector`` fuerza un conector concreto por nombre (opcional).
+        Con ``force=True`` re-ingesta aunque el contenido no haya cambiado.
         Las claves de ``options`` se pasan tal cual a ``connector.fetch()``.
         """
         try:
@@ -75,32 +83,44 @@ class RAGPipeline:
             logger.exception("El conector '%s' falló con: %s", conn.name, source)
             return IngestResult(connector=conn.name, errors=[f"{type(exc).__name__}: {exc}"])
 
-        return self._ingest_documents(documents, conn)
+        return self._ingest_documents(documents, conn, force=force)
 
     def ingest_text(
         self,
         text: str,
         title: str | None = None,
         metadata: dict[str, Any] | None = None,
+        *,
+        force: bool = False,
     ) -> IngestResult:
         """Atajo para ingestar texto directo sin pasar por resolución de fuente."""
         text_connector = self.registry.get("text")
         document = text_connector.from_text(text, title=title, metadata=metadata)
-        return self._ingest_documents([document], text_connector)
+        return self._ingest_documents([document], text_connector, force=force)
 
-    def _ingest_documents(self, documents: list[Document], connector: BaseConnector) -> IngestResult:
+    def _ingest_documents(
+        self, documents: list[Document], connector: BaseConnector, *, force: bool = False
+    ) -> IngestResult:
         result = IngestResult(connector=connector.name)
         for document in documents:
             if not document.content.strip():
                 result.skipped += 1
                 continue
             try:
+                # Ingesta incremental (Fase 4): si el contenido no cambió, no se re-vectoriza.
+                content_hash = content_fingerprint(document.content)
+                if not force and self.store.document_hash(document.id) == content_hash:
+                    result.unchanged += 1
+                    logger.info("Sin cambios '%s' — omitido", document.title or document.uri)
+                    continue
                 # Semántica de re-ingesta: la misma URI reemplaza su versión anterior.
                 self.store.delete_document(document.id)
                 chunks = self.chunker.chunk_document(document)
                 if not chunks:
                     result.skipped += 1
                     continue
+                for chunk in chunks:
+                    chunk.metadata = {**chunk.metadata, "content_hash": content_hash}
                 embeddings = self.embedder.embed([chunk.text for chunk in chunks])
                 self.store.add(chunks, embeddings)
                 self.retriever.invalidate_index()  # el índice léxico quedó obsoleto

@@ -28,6 +28,16 @@ def short_hash(text: str, length: int = 8) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
 
 
+def content_fingerprint(text: str) -> str:
+    """Huella estable del contenido (ingesta incremental — Fase 4).
+
+    Colapsa todo el espacio en blanco (espacios, tabs, saltos) para que las
+    re-ingestas del mismo documento no produzcan falsos positivos por
+    diferencias triviales de formato.
+    """
+    return short_hash(" ".join((text or "").split()), 16)
+
+
 _WS_RE = re.compile(r"[ \t]+")
 _BLANK_RE = re.compile(r"\n{3,}")
 

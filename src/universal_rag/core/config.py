@@ -14,6 +14,13 @@ Ejemplos::
     RAG_CHUNK_OVERLAP=150
     RAG_TOP_K=5
     RAG_CONNECTOR_DIRS=./mis_conectores
+
+Fase 4 (producción)::
+
+    RAG_DEFAULT_COLLECTION=default       # colección activa por defecto
+    RAG_API_KEY=secreto                  # si se define, exige X-API-Key / Bearer en la API
+    RAG_JOBS_WORKERS=2                   # hilos del pool de ingesta asíncrona
+    RAG_JOBS_MAX_HISTORY=200             # historial máximo de jobs en memoria
 """
 
 from __future__ import annotations
@@ -79,6 +86,12 @@ class Settings(BaseSettings):
     asr_device: str | None = None  # "cpu", "cuda", None = auto
     asr_compute_type: str = "int8"  # int8 es rápido y ligero en CPU
     asr_language: str | None = None  # None = detección automática; "es", "en", …
+
+    # --- Fase 4: producción y escalado -------------------------------------
+    default_collection: str = "default"  # colección activa si no se indica otra
+    api_key: str | None = None  # si se define, la API exige X-API-Key o Bearer
+    jobs_workers: int = Field(default=2, ge=1, le=16)  # pool de ingesta asíncrona
+    jobs_max_history: int = Field(default=200, ge=10)  # jobs recordados en memoria
 
     # --- Conectores externos ---------------------------------------------
     # Directorios con conectores externos: <dir>/<nombre>/connector.py

@@ -42,3 +42,23 @@ jobs:
 
       - name: Smoke import
         run: python -c "import universal_rag; print(universal_rag.__version__)"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t universal-rag:ci .
+
+      - name: Smoke: el contenedor arranca y responde /health
+        run: |
+          docker run -d --name rag-smoke -p 8100:8100 universal-rag:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8100/health > /tmp/health.json; then break; fi
+            sleep 2
+          done
+          cat /tmp/health.json
+          grep -q '"status":"ok"' /tmp/health.json
+          curl -sf http://localhost:8100/stats > /dev/null
+          docker rm -f rag-smoke > /dev/null

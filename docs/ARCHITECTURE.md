@@ -34,7 +34,7 @@ Todo lo anterior está orquestado por `RAGPipeline` (`core/pipeline.py`), la ún
 | `RetrievedChunk` | Chunk + score de similitud (coseno; mayor = mejor). En modo híbrido, score de fusión (RRF o ponderada). |
 | `Citation` | Referencia verificable: `uri`, `source`, `title`, `quote`, `score` — y en media, `start_time`/`end_time`/`timestamp` `[mm:ss–mm:ss]`. |
 | `Answer` | Respuesta final: texto, citas, modelo usado, latencia, nº de contextos y `retrieval` (modo de búsqueda activo). |
-| `IngestResult` | Resumen de ingesta: documentos, chunks, omitidos, errores. |
+| `IngestResult` | Resumen de ingesta: documentos, chunks, omitidos, **sin cambios** (`unchanged`, Fase 4), errores. |
 
 **Invariante clave**: cualquier conector, sin importar el origen, produce `Document`. El resto del pipeline ignora por completo de dónde vino el contenido.
 
@@ -74,9 +74,11 @@ La **prioridad** resuelve colisiones: para `https://youtube.com/watch…`, `yout
 - El `ConnectorRegistry` escanea, instancia y registra; **un conector roto se reporta y queda aislado** (`records[].error`), sin afectar al resto.
 - Routing: `registry.resolve(source)` devuelve el primer conector cuyo `can_handle()` acepte la fuente (esquema URI o extensión).
 
-### Semántica de re-ingesta
+### Semántica de re-ingesta e incremental (Fase 4)
 
 El `id` del documento es `sha256("doc|" + uri)`: ingerir la misma URI **reemplaza** la versión anterior (se borran sus chunks y se insertan los nuevos). Re-ingerir un PDF actualizado actualiza el índice, no lo duplica.
+
+Además, cada documento registra una **huella de contenido** (`content_hash` en los metadatos de sus chunks): si se re-ingesta el mismo URI con contenido idéntico, el pipeline lo salta (`unchanged`) sin re-vectorizar — ingesta incremental apta para cron. `force=True` la ignora.
 
 ## 4. Chunker (core/chunker.py)
 
@@ -140,11 +142,22 @@ Contrato: `generate(question, contexts) -> (texto, modelo)`; el pipeline convier
 
 | Interfaz | Archivo | Notas |
 |---|---|---|
-| API REST | `api/app.py` (FastAPI) | `/` (mini chat UI, Fase 3), `/health`, `/stats`, `/ingest`, `/ingest/text`, `/query`, `/documents`, `/documents/{id}` |
-| CLI | `cli.py` (Typer) | `ingest`, `text`, `query`, `chat` (F3), `eval` (F3), `documents`, `delete`, `clear`, `stats`, `serve`, `mcp` |
-| MCP | `mcp_server.py` (FastMCP, SDK oficial) | 6 tools `rag_*`; stdio o streamable-http |
+| API REST | `api/app.py` (FastAPI) | `/` (mini chat UI, F3), `/health`, `/stats` (+ métricas y colecciones), `/ingest`, `/ingest/text`, `/ingest/async` (F4), `/jobs`, `/jobs/{id}` (F4), `/query`, `/documents`, `/documents/{id}`, `/collections` (F4) |
+| CLI | `cli.py` (Typer) | `ingest`, `text`, `query`, `chat` (F3), `eval` (F3), `collections` (F4), `documents`, `delete`, `clear`, `stats`, `serve`, `mcp` — todos aceptan `--collection` |
+| MCP | `mcp_server.py` (FastMCP, SDK oficial) | 7 tools `rag_*` (incl. `rag_list_collections`, F4); stdio o streamable-http |
 
-Las tres comparten el mismo `RAGPipeline`; no hay lógica duplicada.
+Las tres comparten el mismo `RAGPipeline` (o un `CollectionManager`); no hay lógica duplicada.
+
+## 8b. Producción y escalado (Fase 4)
+
+| Pieza | Archivo | Qué hace |
+|---|---|---|
+| `CollectionManager` | `core/collections.py` | Pipelines aislados por nombre (lazy, thread-safe). Comparte embedder/generator/registro entre colecciones. `default` mantiene la config original (retro-compat); las demás aíslan su persistencia en `<chroma_path>/<nombre>`. Nombres validados por regex (anti path-traversal). |
+| `JobManager` / `JobInfo` | `core/jobs.py` | Ingesta asíncrona: pool de hilos (`RAG_JOBS_WORKERS`), estados `pending → running → done/error`, historial acotado en memoria (`RAG_JOBS_MAX_HISTORY`). Pensado para fuentes lentas (audio/video). |
+| `Metrics` | `core/metrics.py` | Contadores thread-safe por proceso (requests, queries, ingests, errors, uptime). Middleware HTTP en la API + eventos de endpoints. Expuesto en `GET /stats` bajo `runtime`. |
+| Auth por API key | `api/auth.py` | Si `RAG_API_KEY` está definida, dependency de FastAPI compara la clave (`X-API-Key` o `Bearer`) con `hmac.compare_digest`; `/` y `/health` abiertos. |
+| Ingesta incremental | `core/pipeline.py` + `store.document_hash()` | `content_hash` (whitespace-insensible) en metadatos de chunks; salto de documentos idénticos. |
+| Docker | `Dockerfile`, `docker-compose.yml` | Imagen slim con healthcheck, volumen `/app/data`; extras `[local]`/`[media]` opcionales. Guía en `docs/DEPLOYMENT.md`. |
 
 ## 9. Aislamiento de fallos
 
@@ -153,6 +166,8 @@ Las tres comparten el mismo `RAGPipeline`; no hay lógica duplicada.
 | Carga de conector | Un `connector.py` con error no derriba el registro (queda en `records` con `error`). |
 | Routing | `can_handle()` que lanza excepción simplemente no participa en el routing. |
 | Ingesta | Fallo de un documento no aborta el lote: se acumula en `IngestResult.errors`. |
+| Colección | Un nombre inválido se rechaza con 422; las colecciones aíslan stores y fallos. |
+| Jobs | El error de un job no derriba el pool; queda registrado en `JobInfo.error`. |
 | Query sin contexto | Respuesta honesta "No encontré información relevante…" en lugar de alucinación. |
 
 ## 10. Decisiones de diseño
@@ -163,3 +178,6 @@ Las tres comparten el mismo `RAGPipeline`; no hay lógica duplicada.
 - **ChromaDB embebido**: cero infraestructura (sin servidor de vectores), persistencia en disco, API estable.
 - **BM25 propio (Fase 3)**: ~80 líneas sin dependencias — el corpus de un RAG típico se reindexa en milisegundos, y evitamos sumar dependencias nativas.
 - **Híbrido desactivado por defecto**: `RAG_RETRIEVAL=vector` preserva el comportamiento de versiones anteriores; el híbrido es opt-in pero recomendado.
+- **Colecciones compartiendo embedder (Fase 4)**: cargar N veces el mismo modelo de embeddings desperdicia RAM; el manager crea el embedder una vez y lo reutiliza.
+- **Jobs en memoria (Fase 4)**: suficiente para un proceso uvicorn y cero infraestructura; si se necesita multi-nodo, la interfaz `JobManager` es el punto de extensión natural (Redis/Postgres).
+- **Auth opt-in (Fase 4)**: sin `RAG_API_KEY` el comportamiento es idéntico a v0.3.0; con clave, comparación en tiempo constante y rutas de salud abiertas para orquestadores.

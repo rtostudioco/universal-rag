@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+.github
+
+# Datos locales e índices
+data/
+dist/
+build/
+*.egg-info/
+
+# Entornos y caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Desarrollo y docs locales
+.env
+examples/
+docs/
+tests/
+*.md
+!README.md

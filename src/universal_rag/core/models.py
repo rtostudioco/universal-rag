@@ -82,5 +82,6 @@ class IngestResult(BaseModel):
     documents: int = 0
     chunks: int = 0
     skipped: int = 0  # documentos vacíos o duplicados omitidos
+    unchanged: int = 0  # documentos sin cambios saltados (ingesta incremental — Fase 4)
     document_ids: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

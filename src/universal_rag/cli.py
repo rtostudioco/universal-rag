@@ -6,12 +6,16 @@ Comandos:
     query QUESTION   pregunta con respuesta y citas
     chat             chat interactivo en la terminal
     eval GOLDEN      evalúa la recuperación con un golden set (JSONL)
+    collections      lista las colecciones (bases aisladas)
     stats            estadísticas
     documents        lista documentos
     delete DOC_ID    elimina un documento
     clear            vacía el índice
     serve            arranca la API REST (con mini chat UI en /)
     mcp              arranca el servidor MCP
+
+Fase 4: todos los comandos de contenido aceptan ``--collection`` para operar
+sobre bases de conocimiento aisladas.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from universal_rag import __version__
+from universal_rag.core.collections import CollectionManager
 from universal_rag.core.config import Settings
 from universal_rag.core.pipeline import RAGPipeline
 
@@ -38,8 +43,12 @@ app = typer.Typer(
 console = Console()
 
 
-def _pipeline() -> RAGPipeline:
-    return RAGPipeline(settings=Settings())
+def _settings() -> Settings:
+    return Settings()
+
+
+def _pipeline(collection: str | None = None) -> RAGPipeline:
+    return CollectionManager(_settings()).get(collection)
 
 
 def _print_ingest(result) -> None:  # noqa: ANN001
@@ -52,6 +61,8 @@ def _print_ingest(result) -> None:  # noqa: ANN001
             f"{result.chunks} fragmento(s)"
             + (f", {result.skipped} omitido(s)" if result.skipped else "")
         )
+    elif result.unchanged:
+        console.print(f"[yellow]⏭ Sin cambios:[/yellow] {result.unchanged} documento(s) ya ingestado(s)")
 
 
 @app.command()
@@ -59,29 +70,34 @@ def ingest(
     source: str = typer.Argument(..., help="Ruta, globo (docs/*.pdf) o URL a ingestar"),
     title: str | None = typer.Option(None, "--title", "-t", help="Título del documento"),
     connector: str | None = typer.Option(None, "--connector", "-c", help="Forzar conector concreto"),
+    collection: str | None = typer.Option(None, "--collection", "-C", help="Colección destino"),
+    force: bool = typer.Option(False, "--force", "-f", help="Re-ingestar aunque no haya cambios"),
 ) -> None:
     """Ingesta un archivo, patrón o URL en la base de conocimiento."""
-    pipeline = _pipeline()
+    pipeline = _pipeline(collection)
     options = {"title": title} if title else {}
-    _print_ingest(pipeline.ingest(source, connector=connector, **options))
+    _print_ingest(pipeline.ingest(source, connector=connector, force=force, **options))
 
 
 @app.command()
 def text(
     content: str = typer.Argument(..., help="Contenido de texto a ingestar"),
     title: str | None = typer.Option(None, "--title", "-t", help="Título del documento"),
+    collection: str | None = typer.Option(None, "--collection", "-C", help="Colección destino"),
+    force: bool = typer.Option(False, "--force", "-f", help="Re-ingestar aunque no haya cambios"),
 ) -> None:
     """Ingesta texto directo como documento."""
-    _print_ingest(_pipeline().ingest_text(content, title=title))
+    _print_ingest(_pipeline(collection).ingest_text(content, title=title, force=force))
 
 
 @app.command()
 def query(
     question: str = typer.Argument(..., help="Pregunta en lenguaje natural"),
     k: int | None = typer.Option(None, "--k", "-k", min=1, max=50, help="Fragmentos a recuperar"),
+    collection: str | None = typer.Option(None, "--collection", "-C", help="Colección donde consultar"),
 ) -> None:
     """Responde una pregunta con citas a las fuentes."""
-    answer = _pipeline().query(question, k=k)
+    answer = _pipeline(collection).query(question, k=k)
     console.print(Panel(answer.answer, title=f"Respuesta · {answer.model} · {answer.latency_ms:.0f} ms"))
     if answer.citations:
         table = Table(title="Fuentes citadas", show_lines=False)
@@ -104,9 +120,12 @@ def query(
 
 
 @app.command()
-def chat(k: int | None = typer.Option(None, "--k", "-k", min=1, max=50)) -> None:
+def chat(
+    k: int | None = typer.Option(None, "--k", "-k", min=1, max=50),
+    collection: str | None = typer.Option(None, "--collection", "-C", help="Colección donde chatear"),
+) -> None:
     """Chat interactivo en la terminal ('salir' para terminar)."""
-    pipeline = _pipeline()
+    pipeline = _pipeline(collection)
     console.print(
         f"[cyan]Universal RAG[/cyan] · búsqueda [bold]{pipeline.retrieval_label()}[/bold] · "
         "escribe [bold]salir[/bold] para terminar"
@@ -170,6 +189,26 @@ def eval_command(
     )
 
 
+@app.command("collections")
+def collections() -> None:
+    """Lista las colecciones activas con sus documentos y fragmentos."""
+    rows = CollectionManager(_settings()).list_collections()
+    if not rows:
+        console.print("[yellow]Sin colecciones instanciadas.[/yellow]")
+        return
+    table = Table(title="Colecciones")
+    table.add_column("Nombre", style="cyan")
+    table.add_column("Documentos", justify="right")
+    table.add_column("Fragmentos", justify="right")
+    table.add_column("Store", style="magenta")
+    table.add_column("Búsqueda", style="green")
+    for row in rows:
+        table.add_row(
+            row["name"], str(row["documents"]), str(row["chunks"]), row["store"], row["retrieval"]
+        )
+    console.print(table)
+
+
 @app.command()
 def stats() -> None:
     """Muestra estadísticas del pipeline."""
@@ -185,9 +224,11 @@ def stats() -> None:
 
 
 @app.command("documents")
-def documents() -> None:
+def documents(
+    collection: str | None = typer.Option(None, "--collection", "-C", help="Colección a listar"),
+) -> None:
     """Lista los documentos ingestado."""
-    rows = _pipeline().documents()
+    rows = _pipeline(collection).documents()
     if not rows:
         console.print("[yellow]Sin documentos ingestado.[/yellow]")
         return
@@ -203,16 +244,22 @@ def documents() -> None:
 
 
 @app.command()
-def delete(document_id: str = typer.Argument(..., help="ID del documento a eliminar")) -> None:
+def delete(
+    document_id: str = typer.Argument(..., help="ID del documento a eliminar"),
+    collection: str | None = typer.Option(None, "--collection", "-C", help="Colección donde eliminar"),
+) -> None:
     """Elimina un documento y sus fragmentos."""
-    deleted = _pipeline().delete_document(document_id)
+    deleted = _pipeline(collection).delete_document(document_id)
     console.print(f"[green]✓ Eliminado[/green] {document_id}" if deleted else f"[red]✗ No encontrado:[/red] {document_id}")
 
 
 @app.command()
-def clear(confirm: bool = typer.Option(False, "--yes", "-y", prompt="¿Vaciar TODO el índice?")) -> None:
+def clear(
+    confirm: bool = typer.Option(False, "--yes", "-y", prompt="¿Vaciar TODO el índice?"),
+    collection: str | None = typer.Option(None, "--collection", "-C", help="Colección a vaciar"),
+) -> None:
     """Vacía completamente el índice."""
-    pipeline = _pipeline()
+    pipeline = _pipeline(collection)
     pipeline.clear()
     console.print("[green]✓ Índice vaciado[/green]")
 
