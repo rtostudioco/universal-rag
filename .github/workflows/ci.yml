@@ -51,7 +51,7 @@ jobs:
       - name: Build image
         run: docker build -t universal-rag:ci .
 
-      - name: Smoke: el contenedor arranca y responde /health
+      - name: "Smoke: el contenedor arranca y responde /health"
         run: |
           docker run -d --name rag-smoke -p 8100:8100 universal-rag:ci
           for i in $(seq 1 30); do
