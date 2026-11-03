@@ -77,9 +77,10 @@ class Settings(BaseSettings):
     hybrid_alpha: float = Field(default=0.55, ge=0.0, le=1.0)  # peso vectorial en "weighted"
     candidate_k: int = Field(default=25, ge=1, le=200)  # candidatos antes de rerank/top-k
 
-    # --- Reranking (Fase 3) --------------------------------------------------
-    reranker: Literal["none", "cross-encoder"] = "none"
+    # --- Reranking (Fase 3/5) -----------------------------------------------
+    reranker: Literal["none", "cross-encoder", "llm"] = "none"
     rerank_model: str = "BAAI/bge-reranker-base"  # multilingüe (buen español); requiere [local]
+    rerank_llm_model: str | None = None  # modelo para reranker=llm (default: RAG_LLM_MODEL)
 
     # --- ASR (audio/video — Fase 2) ---------------------------------------
     asr_model: str = "base"  # tiny | base | small | medium | large-v3 (faster-whisper)

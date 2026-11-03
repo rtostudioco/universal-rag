@@ -1,6 +1,6 @@
 # Universal RAG
 
-> 🧩 **Pipeline plugable de Retrieval-Augmented Generation** — ingesta universal (texto, archivos, URLs, **audio, video, YouTube, Google Drive**), búsqueda **vectorial o híbrida (BM25 + vectores)** con reranking opcional, evaluación de calidad, **colecciones múltiples, jobs asíncronos, auth por API key** y respuestas con **citas verificables, incluidas citas por minuto** en audio/video.
+> 🧩 **Pipeline plugable de Retrieval-Augmented Generation** — ingesta universal (texto, archivos, URLs, **audio, video, YouTube, Drive, S3/MinIO, Notion**), búsqueda **vectorial o híbrida (BM25 + vectores)** con reranking (cross-encoder **o LLM**), **extracción de tablas**, evaluación de calidad, **colecciones múltiples, jobs asíncronos, auth por API key** y respuestas con **citas verificables, incluidas citas por minuto** en audio/video.
 
 Hermano de [Universal MCP](https://github.com/rtostudioco/universal-mcp): misma filosofía **"universal"** — núcleo estable, capacidades que se agregan soltando carpetas, sin tocar el servidor.
 
@@ -15,14 +15,15 @@ Hermano de [Universal MCP](https://github.com/rtostudioco/universal-mcp): misma 
 
 | Pieza | Qué hace |
 |---|---|
-| 🔌 **Conectores plugables** | Fase 1: `text`, `file` (PDF/DOCX/TXT/MD/CSV + globs), `url` (extracción legible). Fase 2: `audio`, `video`, `youtube`, `drive`. Agrega los tuyos soltando una carpeta — un conector roto **no derriba el sistema**. |
+| 🔌 **Conectores plugables** | Fase 1: `text`, `file` (PDF/DOCX/TXT/MD/CSV + globs), `url` (extracción legible). Fase 2: `audio`, `video`, `youtube`, `drive`. Fase 5: `s3` (S3/MinIO, objetos o prefijos), `notion` (páginas y bases de datos). Agrega los tuyos soltando una carpeta — un conector roto **no derriba el sistema**. |
 | ✂️ **Chunker configurable** | División con conciencia de párrafos/frases/palabras y solapamiento; para audio/video, **troceado temporal** acotado por minuto. |
 | 🧠 **Embeddings locales** | `sentence-transformers` (multilingüe, privado, sin APIs) con fallback determinista sin dependencias. |
 | 🗄️ **ChromaDB embebido** | Persistente, sin servidor; intercambiable por otro store (incl. uno en memoria para tests). |
 | 🔍 **Búsqueda semántica** | Recuperación con scores de similitud y filtros por metadatos (`where`). |
 | ⚡ **Búsqueda híbrida (Fase 3)** | BM25 (léxico, cero dependencias) + vectores con **fusión RRF o ponderada** — atrapa códigos, nombres propios y términos exactos que los embeddings diluyen. |
-| 🎯 **Reranking (Fase 3)** | Reranker plugable: cross-encoder local (`bge-reranker`, multilingüe) reordena los candidatos con máxima precisión. |
+| 🎯 **Reranking (Fase 3/5)** | Reranker plugable: cross-encoder local (`bge-reranker`, multilingüe) o **reranking con LLM** (`RAG_RERANKER=llm`, cualquier endpoint compatible OpenAI, con degradación elegante). |
 | 📊 **Evaluación (Fase 3)** | Golden sets JSONL con **precision/recall/MRR/hit-rate** — mide la calidad antes de tocar producción. |
+| 📋 **Extracción de tablas (Fase 5)** | Las tablas de DOCX, HTML y PDF (opcional `pdfplumber`) se convierten a **Markdown indexable**: las preguntas sobre celdas recuperan la tabla completa. |
 | 🗨️ **Mini chat UI (Fase 3)** | Chat web incluido (`http://localhost:8100/`), autocontenido y sin CDNs, con citas y minutos visibles. |
 | 📚 **Colecciones múltiples (Fase 4)** | Bases de conocimiento aisladas (`legal`, `faq`, `energy`…) sobre un mismo despliegue: ingesta/consulta por colección en API, CLI y MCP. |
 | 🔄 **Jobs asíncronos (Fase 4)** | `POST /ingest/async` + polling en `GET /jobs/{id}` — ingesta de fuentes lentas (audio, video, lotes) sin bloquear al cliente. |
@@ -41,6 +42,9 @@ Hermano de [Universal MCP](https://github.com/rtostudioco/universal-mcp): misma 
 pip install universal-rag                 # núcleo (embeddings deterministas)
 pip install "universal-rag[local]"        # + embeddings neuronales locales
 pip install "universal-rag[media]"        # + audio/video/youtube (faster-whisper, yt-dlp)
+pip install "universal-rag[s3]"           # + S3/MinIO (boto3)
+pip install "universal-rag[tables]"       # + tablas en PDF (pdfplumber)
+pip install "universal-rag[local,media,s3,tables]"  # todo
 ```
 
 ### CLI
@@ -54,6 +58,13 @@ universal-rag ingest ./podcast.mp3                # → transcripción local + m
 universal-rag ingest ./clase.mp4                  # → pista de audio → ASR + minutos
 universal-rag ingest "https://youtu.be/abc123"    # → YouTube → ASR + minutos
 universal-rag ingest "drive://<fileId>"           # → Google Drive (público/compartido)
+
+# Fase 5: S3/MinIO y Notion
+universal-rag ingest "s3://mi-bucket/informes/"   # → prefijo: ingesta todos los soportados
+universal-rag ingest "s3://mi-bucket/informe.pdf" # → objeto concreto (MinIO: endpoint_url=…)
+universal-rag ingest "notion://<page-id>"          # → página de Notion (requiere RAG_NOTION_TOKEN)
+universal-rag ingest "notion://database/<db-id>"   # → cada fila = un documento
+universal-rag ingest "notion://search/manual faq"  # → primer resultado de la búsqueda
 
 # Consulta con citas (en media, con minuto exacto)
 universal-rag query "¿cada cuánto se limpian los paneles?"
@@ -165,8 +176,11 @@ print(manager.list_collections())   # resumen por colección
 | `RAG_HYBRID_FUSION` | `rrf` | `rrf` \| `weighted` (min-max + alpha) |
 | `RAG_HYBRID_ALPHA` | `0.55` | Peso vectorial en `weighted` (0 = solo BM25) |
 | `RAG_CANDIDATE_K` | `25` | Candidatos antes de rerank/top-k |
-| `RAG_RERANKER` | `none` | `none` \| `cross-encoder` (requiere `[local]`) |
+| `RAG_RERANKER` | `none` | `none` \| `cross-encoder` (requiere `[local]`) \| `llm` (Fase 5, usa `RAG_LLM_BASE_URL`) |
 | `RAG_RERANK_MODEL` | `BAAI/bge-reranker-base` | Cross-encoder multilingüe |
+| `RAG_RERANK_LLM_MODEL` | *(usa `RAG_LLM_MODEL`)* | Modelo del LLM cuando `RAG_RERANKER=llm` (Fase 5) |
+| `RAG_NOTION_TOKEN` | — | Token de integración de Notion (o `token=` por ingesta — Fase 5) |
+| `RAG_S3_ENDPOINT_URL` / `RAG_S3_REGION` | — | MinIO/R2/Spaces y región (o `endpoint_url=`/`region=` — Fase 5) |
 | `RAG_ASR_MODEL` | `base` | Whisper: `tiny` \| `base` \| `small` \| `medium` \| `large-v3` |
 | `RAG_ASR_LANGUAGE` | *(auto)* | `es`, `en`, … (o `language=` por ingesta) |
 | `RAG_CONNECTOR_DIRS` | — | Directorios con conectores externos |
@@ -187,14 +201,16 @@ export RAG_LLM_MODEL=llama3.1
 ```
 fuente ──▶ ConnectorRegistry (auto-descubrimiento + prioridad) ──▶ Document
               │ text/file/url (F1)      │ audio/video/youtube/drive (F2: ASR local)
-              ▼                         ▼   segments (start, end, text)
+              │                         │ s3/notion (F5)      │ segments (start, end, text)
+              │                         └ tablas DOCX/HTML/PDF → Markdown (F5)
+                                        ▼
                                         Chunker ──▶ Chunks ──▶ Embedder ──▶ VectorStore (Chroma)
                                         (texto: párrafos)    (media: por minuto [mm:ss])
                                                                      │
         pregunta ──▶ Retriever ◀──────────────────────────────────────┘
           │  │ vectorial (coseno)
           │  └ híbrido: + BM25 (F3) ── fusión RRF/weighted
-          │ RetrievedChunks ──▶ Reranker (F3: cross-encoder, opcional)
+          │ RetrievedChunks ──▶ Reranker (F3: cross-encoder · F5: LLM, opcionales)
                         ▼
                    Generator (OpenAI-compat / echo) ──▶ Answer + Citations [1][2]… [00:00–01:05]
 ```
@@ -207,7 +223,8 @@ Detalles en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Búsqueda híbrida
 - **Fase 2 (✅ v0.2.0)** — conectores `audio` (MP3), `video` (MP4), `youtube` y `drive` con ASR **faster-whisper** local y **citas por minuto**.
 - **Fase 3 (✅ v0.3.0)** — **búsqueda híbrida** (BM25 + vectores, fusión RRF/weighted), **reranking** (cross-encoder local), **evaluación** (precision/recall/MRR con golden sets) y **mini chat UI**.
 - **Fase 4 (✅ v0.4.0)** — **producción y escalado**: colecciones múltiples, jobs asíncronos con polling, auth por API key, métricas runtime, ingesta incremental (skip sin cambios) y despliegue Docker.
-- **Fase 5 (futuro)** — conectores S3/Notion, reranking con LLM y extracción de tablas.
+- **Fase 5 (✅ v0.5.0)** — **ecosistema de fuentes y calidad**: conector **S3/MinIO** (objetos y prefijos), conector **Notion** (páginas, bases de datos y búsqueda vía API oficial), **reranking con LLM** (`RAG_RERANKER=llm`, degradación elegante) y **extracción de tablas** a Markdown en DOCX/HTML/PDF.
+- **Fase 6 (futuro)** — respuestas en streaming (SSE), workbench web completo (ingesta y gestión de documentos desde el navegador) y caché semántica de consultas.
 
 > 💡 **Calidad del ASR**: el modelo `base` es rápido y ligero; para español u otros idiomas no ingleses recomendamos `RAG_ASR_MODEL=small` (o `medium`) — la precisión mejora notablemente. Audio con música de fondo o voces sintéticas degrada la precisión de cualquier Whisper.
 
@@ -216,7 +233,7 @@ Detalles en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Búsqueda híbrida
 ```bash
 git clone https://github.com/rtostudioco/universal-rag && cd universal-rag
 pip install -e ".[dev]"
-pytest                # 202 tests (sin red, sin modelos pesados)
+pytest                # 265 tests (sin red, sin modelos pesados)
 ruff check .
 ```
 

@@ -3,6 +3,43 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y versionado con [SemVer](https://semver.org/lang/es/).
 
+## [0.5.0] — Fase 5: Ecosistema de fuentes y calidad
+
+### Añadido
+- **Conector `s3`** (Fase 5): objetos S3/MinIO/R2 (`s3://bucket/clave.pdf`) y
+  **prefijos completos** (`s3://bucket/informes/` → ingesta en lote con `limit`).
+  La extracción (PDF/DOCX/TXT/MD/CSV) corre local sobre el objeto descargado;
+  el documento conserva `bucket`, `key`, `etag` y `object_size`. Requiere el
+  extra ``[s3]`` (boto3); credenciales por cadena estándar de AWS o opciones
+  `aws_access_key_id`/`aws_secret_access_key`; MinIO/R2/Spaces con
+  `endpoint_url` (o `RAG_S3_ENDPOINT_URL`). Un objeto roto no detiene el lote.
+- **Conector `notion`** (Fase 5): páginas, **bases de datos completas** (cada
+  fila = un documento) y búsqueda (`notion://search/…`) vía **API REST oficial**
+  — sin dependencias nuevas (httpx). Token por `RAG_NOTION_TOKEN` u opción
+  `token=`. Renderiza encabezados, listas, to-dos, código, tablas (→ Markdown)
+  y respeta paginación y throttling (~3 req/s, ajustable con `throttle=0`).
+  También acepta URLs públicas `https://www.notion.so/…` (prioridad sobre el
+  conector `url`).
+- **Reranking con LLM** (`RAG_RERANKER=llm`): un endpoint compatible OpenAI
+  puntúa la relevancia 0-10 de cada candidato y reordena el top. Modelo
+  dedicado opcional (`RAG_RERANK_LLM_MODEL`, default `RAG_LLM_MODEL`).
+  **Degradación elegante**: fallo de red, JSON inválido o cobertura parcial
+  (<80%) conserva el orden del retriever.
+- **Extracción de tablas a Markdown**: las tablas de **DOCX** (python-docx) y
+  **HTML/URL** (bs4, sin duplicar el texto del artículo) se anexan como bloques
+  ``### Tabla N`` indexables; en **PDF** vía ``pdfplumber`` (extra opcional
+  ``[tables]``, ausencia tolerada). Los metadatos exponen `tables: N` y una
+  consulta sobre celdas recupera la tabla completa.
+- Extras opcionales `[s3]` (boto3) y `[tables]` (pdfplumber).
+- 63 tests nuevos (tablas, Notion, S3, reranker LLM) — suite total: **265**.
+
+### Cambiado
+- `Settings.reranker` acepta `llm` (antes: `none` | `cross-encoder`).
+- `create_reranker()` con `RAG_RERANKER=llm` sin `RAG_LLM_BASE_URL` cae a
+  `NoopReranker` con advertencia (no rompe el arranque).
+- El conector `url` extrae `<table>` a Markdown y pasa `include_tables=False`
+  a trafilatura para no duplicar contenido.
+
 ## [0.4.0] — Fase 4: Producción y escalado
 
 ### Añadido

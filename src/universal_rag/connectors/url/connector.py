@@ -46,8 +46,9 @@ class URLConnector(BaseConnector):
         response.raise_for_status()
 
         content_type = response.headers.get("content-type", "")
+        table_count = 0
         if "html" in content_type or "xml" in content_type or not content_type:
-            title, text = extract_html(response.text)
+            title, text, table_count = extract_html_with_tables(response.text)
         else:
             title, text = None, response.text
 
@@ -61,6 +62,7 @@ class URLConnector(BaseConnector):
             "final_url": str(response.url),
             "status_code": response.status_code,
             "content_type": content_type.split(";")[0].strip(),
+            "tables": table_count,
             "fetched_at": utcnow().isoformat(),
         }
         document = self.build_document(
@@ -74,21 +76,33 @@ class URLConnector(BaseConnector):
 
 
 def extract_html(html: str) -> tuple[str | None, str]:
-    """Extrae (título, texto) del HTML: trafilatura sobre HTML limpiado + fallback bs4.
+    """Extrae (título, texto) del HTML — atajo de :func:`extract_html_with_tables`."""
+    title, text, _tables = extract_html_with_tables(html)
+    return title, text
 
-    Primero se eliminan nodos de ruido (script, nav, footer…); después se
-    intenta trafilatura (alta calidad sobre el contenido restante) y, si no
-    produce texto, se usa la heurística bs4 (main/article/párrafos).
+
+def extract_html_with_tables(html: str) -> tuple[str | None, str, int]:
+    """Extrae ``(título, texto, n_tablas)`` del HTML.
+
+    Las ``<table>`` se convierten a Markdown (Fase 5) y se anexan al texto;
+    se retiran del árbol antes de trafilatura/bs4 para no duplicar contenido.
     """
+    from universal_rag.core.tables import html_tables, tables_to_markdown
+
     soup = _clean_soup(html)
     title = _soup_title(soup)
+
+    # Tablas → Markdown, y fuera del árbol (evita duplicados en el texto plano)
+    tables = html_tables(soup)
+    for table_tag in soup.find_all("table"):
+        table_tag.decompose()
 
     text = ""
     if soup.find(["p", "h1", "article", "main"]):  # hay contenido estructurado que intentar
         try:
             import trafilatura
 
-            text = trafilatura.extract(str(soup), include_comments=False, include_tables=True) or ""
+            text = trafilatura.extract(str(soup), include_comments=False, include_tables=False) or ""
         except Exception:  # noqa: BLE001 — fallback limpio
             logger.debug("trafilatura falló; usando bs4", exc_info=True)
 
@@ -98,7 +112,11 @@ def extract_html(html: str) -> tuple[str | None, str]:
         lines = [line.strip() for line in text.split("\n")]
         text = "\n".join(line for line in lines if line)
 
-    return title, text.strip()
+    table_markdown = tables_to_markdown(tables)
+    if table_markdown:
+        text = f"{text}\n\n{table_markdown}".strip()
+
+    return title, text.strip(), len(tables)
 
 
 def _soup_title(soup) -> str | None:  # noqa: ANN001

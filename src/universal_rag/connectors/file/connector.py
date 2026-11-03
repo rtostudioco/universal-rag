@@ -16,6 +16,28 @@ logger = get_logger("connectors.file")
 _MAX_CSV_ROWS = 5000
 
 
+def extract_pdf_tables(path: Path) -> list[list[list[str]]]:
+    """Tablas de un PDF vía ``pdfplumber`` (opcional: extra ``[tables]``).
+
+    Devuelve ``[]`` si pdfplumber no está instalado o si la lectura falla:
+    las tablas son un extra y nunca rompen la ingesta del texto.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return []
+    try:
+        tables: list[list[list[str]]] = []
+        with pdfplumber.open(str(path)) as pdf:
+            for page in pdf.pages:
+                for table in page.extract_tables() or []:
+                    tables.append([list(row) if row else [] for row in table])
+        return tables
+    except Exception:  # noqa: BLE001 — el PDF puede estar corrupto; el texto ya se extrajo
+        logger.warning("pdfplumber no pudo extraer tablas de %s", path, exc_info=True)
+        return []
+
+
 class FileConnector(BaseConnector):
     """Extrae texto de archivos locales y lo normaliza a Document(s).
 
@@ -94,13 +116,15 @@ class FileConnector(BaseConnector):
             content = self._read_csv(path, encoding)
             metadata["format"] = "csv"
         elif suffix == ".pdf":
-            content, page_count = self._read_pdf(path)
+            content, page_count, table_count = self._read_pdf(path)
             metadata["format"] = "pdf"
             metadata["pages"] = page_count
+            metadata["tables"] = table_count
         elif suffix == ".docx":
-            content, paragraph_count = self._read_docx(path)
+            content, paragraph_count, table_count = self._read_docx(path)
             metadata["format"] = "docx"
             metadata["paragraphs"] = paragraph_count
+            metadata["tables"] = table_count
         else:  # pragma: no cover — filtrado por can_handle
             raise ValueError(f"Formato no soportado: {suffix}")
 
@@ -140,7 +164,8 @@ class FileConnector(BaseConnector):
         return "\n".join(lines)
 
     @staticmethod
-    def _read_pdf(path: Path) -> tuple[str, int]:
+    def _read_pdf(path: Path) -> tuple[str, int, int]:
+        """Extrae texto (pypdf) y tablas (pdfplumber, opcional) de un PDF."""
         try:
             from pypdf import PdfReader
         except ImportError as exc:  # pragma: no cover
@@ -148,19 +173,30 @@ class FileConnector(BaseConnector):
         reader = PdfReader(str(path))
         pages = [page.extract_text() or "" for page in reader.pages]
         text = "\n\n".join(page for page in pages if page.strip())
-        return text, len(reader.pages)
+        table_count = 0
+        pdf_tables = extract_pdf_tables(path)
+        if pdf_tables:
+            from universal_rag.core.tables import tables_to_markdown
+
+            rendered = tables_to_markdown(pdf_tables)
+            if rendered:
+                text = f"{text}\n\n{rendered}".strip() if text else rendered
+                table_count = len(pdf_tables)
+        return text, len(reader.pages), table_count
 
     @staticmethod
-    def _read_docx(path: Path) -> tuple[str, int]:
+    def _read_docx(path: Path) -> tuple[str, int, int]:
+        """Extrae párrafos y tablas (renderizadas a Markdown) de un DOCX."""
         try:
             import docx
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError("python-docx no está instalado (pip install universal-rag)") from exc
+        from universal_rag.core.tables import docx_tables, tables_to_markdown
+
         document = docx.Document(str(path))
         parts = [p.text for p in document.paragraphs if p.text.strip()]
-        for table in document.tables:
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if cells:
-                    parts.append(" | ".join(cells))
-        return "\n\n".join(parts), len(parts)
+        tables = docx_tables(document)
+        table_text = tables_to_markdown(tables)
+        if table_text:
+            parts.append(table_text)
+        return "\n\n".join(parts), len(parts), len(tables)
