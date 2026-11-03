@@ -86,7 +86,11 @@ class SentenceTransformerEmbedder(BaseEmbedder):
                 ) from exc
             logger.info("Cargando modelo de embeddings '%s' (puede tardar la primera vez)…", self.model_name)
             self._model = SentenceTransformer(self.model_name, device=self.device)
-            self.dimension = int(self._model.get_sentence_embedding_dimension())
+            # compat: API nueva (get_embedding_dimension) con fallback a la antigua
+            dim_fn = getattr(self._model, "get_embedding_dimension", None)
+            self.dimension = int(dim_fn()) if callable(dim_fn) else int(
+                self._model.get_sentence_embedding_dimension()
+            )
         return self._model
 
     def embed(self, texts: list[str]) -> list[list[float]]:
