@@ -40,6 +40,7 @@ class Metrics:
             "uptime_seconds": uptime,
             "requests": counters.get("requests", 0),
             "queries": counters.get("queries", 0),
+            "queries_stream": counters.get("queries_stream", 0),
             "ingests": counters.get("ingests", 0),
             "ingests_async": counters.get("ingests_async", 0),
             "errors": counters.get("errors", 0),

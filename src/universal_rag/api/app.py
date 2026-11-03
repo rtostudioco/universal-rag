@@ -1,7 +1,8 @@
 """API REST de Universal RAG (FastAPI).
 
 Endpoints:
-    GET    /                        mini chat UI (HTML)
+    GET    /                        workbench web (chat streaming + gestión)
+    GET    /chat                    mini chat clásico (HTML)
     GET    /health                  estado del servicio (abierto)
     GET    /stats                   estadísticas + métricas runtime
     POST   /ingest                  ingesta por fuente (conector automático)
@@ -10,6 +11,7 @@ Endpoints:
     GET    /jobs                    lista de jobs
     GET    /jobs/{id}               estado de un job
     POST   /query                   pregunta con respuesta + citas
+    POST   /query/stream            pregunta con respuesta en streaming (SSE)
     GET    /documents               lista de documentos ingestado
     DELETE /documents/{id}          elimina un documento y sus fragmentos
     GET    /collections             colecciones activas
@@ -17,6 +19,7 @@ Endpoints:
 
 Fase 4: colecciones múltiples (parámetro ``collection``), jobs asíncronos,
 autenticación opcional por API key (``RAG_API_KEY``) y métricas runtime.
+Fase 6: streaming SSE (``/query/stream``), caché semántica y workbench web.
 
 Uso::
 
@@ -26,12 +29,13 @@ Uso::
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from universal_rag import __version__
@@ -41,8 +45,10 @@ from universal_rag.core.config import Settings
 from universal_rag.core.jobs import JobInfo, JobManager, JobStatus
 from universal_rag.core.metrics import Metrics
 from universal_rag.core.pipeline import RAGPipeline
+from universal_rag.core.utils import get_logger
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+logger = get_logger("api")
 
 
 class IngestRequest(BaseModel):
@@ -109,8 +115,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ------------------------------------------------------------------ basic
     @app.get("/", include_in_schema=False)
+    def workbench_ui() -> HTMLResponse:
+        """Workbench web (Fase 6): chat en streaming + documentos + ingesta + estado."""
+        return HTMLResponse((_STATIC_DIR / "workbench.html").read_text(encoding="utf-8"))
+
+    @app.get("/chat", include_in_schema=False)
     def chat_ui() -> HTMLResponse:
-        """Mini chat UI (HTML autocontenido, sin CDNs)."""
+        """Mini chat clásico (HTML autocontenido, sin CDNs)."""
         return HTMLResponse((_STATIC_DIR / "chat.html").read_text(encoding="utf-8"))
 
     @app.get("/health", tags=["system"], summary="Estado del servicio")
@@ -191,6 +202,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.question, k=request.k, where=request.where
         )
         return answer.model_dump()
+
+    @protected.post(
+        "/query/stream",
+        tags=["query"],
+        summary="Pregunta con respuesta en streaming (SSE)",
+    )
+    def query_stream(request: QueryRequest) -> StreamingResponse:
+        """Server-Sent Events: ``meta`` (fuentes) → ``token``* → ``done`` (Answer).
+
+        Consumible con ``fetch`` + ReadableStream o ``EventSource``-compatible.
+        Con caché semántica activa, ``meta.cached=true`` indica respuesta servida
+        de caché.
+        """
+        app.state.metrics.inc("queries_stream")
+        pipeline = _pipeline(request.collection)
+
+        def event_source():
+            try:
+                for event in pipeline.stream_query(
+                    request.question, k=request.k, where=request.where
+                ):
+                    etype = event["type"]
+                    if etype == "token":
+                        data: Any = event.get("value", "")
+                    elif etype == "done":
+                        data = event.get("answer")
+                    else:
+                        data = {key: value for key, value in event.items() if key != "type"}
+                    payload = json.dumps(data, ensure_ascii=False, default=str)
+                    yield f"event: {etype}\ndata: {payload}\n\n"
+            except Exception as exc:  # noqa: BLE001 — el error viaja por el stream
+                logger.exception("Error en /query/stream")
+                error_payload = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                yield f"event: error\ndata: {error_payload}\n\n"
+
+        return StreamingResponse(
+            event_source(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # desactiva buffering en proxies (nginx)
+            },
+        )
 
     # -------------------------------------------------------------- documents
     @protected.get("/documents", tags=["documents"], summary="Documentos ingestado")

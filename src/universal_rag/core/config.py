@@ -21,6 +21,13 @@ Fase 4 (producción)::
     RAG_API_KEY=secreto                  # si se define, exige X-API-Key / Bearer en la API
     RAG_JOBS_WORKERS=2                   # hilos del pool de ingesta asíncrona
     RAG_JOBS_MAX_HISTORY=200             # historial máximo de jobs en memoria
+
+Fase 6 (streaming, caché y workbench)::
+
+    RAG_CACHE_ENABLED=1                  # caché semántica de consultas
+    RAG_CACHE_THRESHOLD=0.93             # similitud coseno mínima para acertar
+    RAG_CACHE_MAX_ENTRIES=512            # LRU máximo en memoria
+    RAG_CACHE_TTL=                       # segundos de vida (vacío = sin TTL)
 """
 
 from __future__ import annotations
@@ -93,6 +100,12 @@ class Settings(BaseSettings):
     api_key: str | None = None  # si se define, la API exige X-API-Key o Bearer
     jobs_workers: int = Field(default=2, ge=1, le=16)  # pool de ingesta asíncrona
     jobs_max_history: int = Field(default=200, ge=10)  # jobs recordados en memoria
+
+    # --- Fase 6: caché semántica -------------------------------------------
+    cache_enabled: bool = True  # caché semántica de respuestas (por colección)
+    cache_threshold: float = Field(default=0.93, ge=0.50, le=1.0)  # coseno mínimo
+    cache_max_entries: int = Field(default=512, ge=10)  # LRU máximo
+    cache_ttl: float | None = Field(default=None, ge=0)  # segundos; None = sin expiración
 
     # --- Conectores externos ---------------------------------------------
     # Directorios con conectores externos: <dir>/<nombre>/connector.py

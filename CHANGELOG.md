@@ -3,6 +3,45 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y versionado con [SemVer](https://semver.org/lang/es/).
 
+## [0.6.0] — Fase 6: Streaming, caché semántica y workbench web
+
+### Añadido
+- **Streaming SSE** (`POST /query/stream`): eventos `meta` (modelo, modo de
+  búsqueda, nº de contextos y **preview de fuentes**) → `token`* (texto
+  progresivo) → `done` (Answer completo con citas). Funciona con o sin LLM:
+  `EchoGenerator` trocea su salida y `OpenAICompatGenerator` hace **streaming
+  real** del endpoint (`stream=true`, parseo SSE tolerante, fallback automático
+  si el endpoint ignora `stream`). Cabeceras anti-buffering (`X-Accel-Buffering`).
+- **`RAGPipeline.stream_query()`**: mismo contrato de eventos a nivel Python;
+  en CLI con `universal-rag query "…" --stream` (imprime token a token y
+  cierra con la tabla de fuentes).
+- **Caché semántica de consultas** (`core/cache.py`, Fase 6): guarda respuestas
+  indexadas por el embedding de la pregunta; ante una pregunta igual o
+  parafraseada (coseno ≥ `RAG_CACHE_THRESHOLD`, default `0.93`) sirve la
+  respuesta sin repetir recuperación ni LLM. **LRU** (`RAG_CACHE_MAX_ENTRIES`)
+  + **TTL opcional** (`RAG_CACHE_TTL`), thread-safe, por colección, con
+  métricas (`entries/hits/misses/hit_rate` en `/stats`). **Invalidación
+  automática** al ingestar, borrar documento o vaciar. `Answer.cached=true`
+  y `cache.enabled=false` con `RAG_CACHE_ENABLED=0`. La caché solo aplica a
+  consultas con parámetros por defecto (`k`/`where` explícitos la evitan).
+- **Workbench web** en `/` (Fase 6): consola completa autocontenida (sin
+  CDNs) con 4 pestañas — **Chat** (streaming token a token vía `fetch` +
+  ReadableStream, badges de caché/modelo/búsqueda y citas al final),
+  **Documentos** (tabla con título/fuente/URI/fragmentos + eliminar),
+  **Ingestar** (texto directo o fuente con conector automático) y **Estado**
+  (stats, caché, colecciones con vaciado, conectores y métricas runtime).
+  Selector de colección y API key compartidos entre pestañas.
+- 41 tests nuevos (caché, streaming, SSE mock del LLM, workbench) —
+  suite total: **306**.
+
+### Cambiado
+- `GET /` ahora sirve el **workbench**; el mini chat clásico de la Fase 3
+  sigue disponible en `GET /chat`.
+- `Metrics.snapshot()` expone el contador `queries_stream`.
+- `OpenAICompatGenerator` acepta `client=` (httpx) inyectable para tests y
+  reutiliza payload/headers entre `generate()` y `stream_generate()`.
+- `RAGPipeline.stats()` incluye la clave `cache`.
+
 ## [0.5.0] — Fase 5: Ecosistema de fuentes y calidad
 
 ### Añadido

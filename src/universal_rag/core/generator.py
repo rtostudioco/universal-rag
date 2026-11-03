@@ -12,7 +12,9 @@ extrayendo los marcadores ``[1]``, ``[2]``… del texto generado.
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from typing import ClassVar
 
 import httpx
@@ -37,12 +39,39 @@ class GeneratorError(RuntimeError):
     """Fallo del generador LLM."""
 
 
+def tokenize_stream(text: str, words_per_piece: int = 3) -> Iterator[str]:
+    """Parte un texto en trozos pequeños (~tokens de LLM) para streaming.
+
+    La concatenación de los trozos reproduce el texto original **exactamente**
+    (los separadores entre trozos viajan dentro del trozo siguiente).
+    """
+    words = (text or "").split(" ")
+    if not words or words == [""]:
+        return
+    groups = [" ".join(words[start : start + words_per_piece]) for start in range(0, len(words), words_per_piece)]
+    for i, piece in enumerate(groups):
+        yield piece if i == 0 else " " + piece
+
+
 class BaseGenerator(ABC):
     name: ClassVar[str] = "base"
 
     @abstractmethod
     def generate(self, question: str, contexts: list[RetrievedChunk]) -> tuple[str, str]:
         """Devuelve (texto_respuesta, nombre_modelo)."""
+
+    @property
+    def model_label(self) -> str:
+        """Nombre del modelo para mostrar (default: nombre del generador)."""
+        return self.name
+
+    def stream_generate(self, question: str, contexts: list[RetrievedChunk]) -> Iterator[str]:
+        """Streaming por defecto: genera todo y lo emite en trozos pequeños.
+
+        Los generadores con streaming real (SSE del LLM) lo sobreescriben.
+        """
+        text, _ = self.generate(question, contexts)
+        yield from tokenize_stream(text)
 
 
 # ------------------------------------------------------------------------- echo
@@ -61,6 +90,10 @@ class EchoGenerator(BaseGenerator):
         lines.append("(Modo extractivo: no hay LLM configurado; se muestran los fragmentos recuperados.)")
         return "\n".join(lines).strip(), self.name
 
+    def stream_generate(self, question: str, contexts: list[RetrievedChunk]) -> Iterator[str]:
+        text, _ = self.generate(question, contexts)
+        yield from tokenize_stream(text)
+
 
 # ------------------------------------------------------------------- openai-compat
 class OpenAICompatGenerator(BaseGenerator):
@@ -76,6 +109,7 @@ class OpenAICompatGenerator(BaseGenerator):
         temperature: float = 0.2,
         max_context_chars: int = 6000,
         timeout: float = 90.0,
+        client: httpx.Client | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -83,27 +117,16 @@ class OpenAICompatGenerator(BaseGenerator):
         self.temperature = temperature
         self.max_context_chars = max_context_chars
         self.timeout = timeout
+        self._client = client  # inyectable para tests (httpx.MockTransport)
+
+    @property
+    def model_label(self) -> str:
+        return self.model
 
     # ------------------------------------------------------------------ API
     def generate(self, question: str, contexts: list[RetrievedChunk]) -> tuple[str, str]:
-        payload = {
-            "model": self.model,
-            "temperature": self.temperature,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT_ES},
-                {"role": "user", "content": self._user_prompt(question, contexts)},
-            ],
-        }
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
         try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=self.timeout,
-            )
+            response = self._post(self._payload(question, contexts), self._headers())
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPError as exc:
@@ -114,7 +137,86 @@ class OpenAICompatGenerator(BaseGenerator):
             raise GeneratorError(f"Respuesta del LLM con formato inesperado: {data!r}") from exc
         return text.strip(), self.model
 
+    def stream_generate(self, question: str, contexts: list[RetrievedChunk]) -> Iterator[str]:
+        """Streaming real vía SSE del endpoint (/chat/completions stream=true)."""
+        payload = self._payload(question, contexts)
+        payload["stream"] = True
+        pieces: list[str] = []
+        try:
+            with self._stream(payload, self._headers()) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    piece = self._parse_sse_line(line)
+                    if piece is None:
+                        continue
+                    pieces.append(piece)
+                    yield piece
+        except httpx.HTTPError as exc:
+            if pieces:
+                # El stream se cortó a mitad: devolvemos lo recibido (parcial).
+                logger.warning("Stream interrumpido tras %d pieza(s): %s", len(pieces), exc)
+                return
+            raise GeneratorError(f"Error llamando al LLM ({self.base_url}): {exc}") from exc
+        if not pieces:
+            # Endpoint que ignora stream=true o devolvió vacío: fallback clásico.
+            text, _ = self.generate(question, contexts)
+            yield text
+
     # ------------------------------------------------------------- internals
+    def _payload(self, question: str, contexts: list[RetrievedChunk]) -> dict:
+        return {
+            "model": self.model,
+            "temperature": self.temperature,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT_ES},
+                {"role": "user", "content": self._user_prompt(question, contexts)},
+            ],
+        }
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _post(self, payload: dict, headers: dict[str, str]) -> httpx.Response:
+        if self._client is not None:
+            return self._client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
+        return httpx.post(
+            f"{self.base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=self.timeout,
+        )
+
+    def _stream(self, payload: dict, headers: dict[str, str]):
+        if self._client is not None:
+            return self._client.stream("POST", f"{self.base_url}/chat/completions", json=payload, headers=headers)
+        return httpx.stream(
+            f"{self.base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=self.timeout,
+        )
+
+    @staticmethod
+    def _parse_sse_line(line: str) -> str | None:
+        """Extrae el contenido de una línea SSE ``data: {...}`` (None si no hay)."""
+        line = (line or "").strip()
+        if not line.startswith("data:"):
+            return None
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            return None
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError:
+            return None
+        choices = chunk.get("choices") or [{}]
+        delta = (choices[0] or {}).get("delta") or {}
+        content = delta.get("content")
+        return content if isinstance(content, str) and content else None
+
     def _user_prompt(self, question: str, contexts: list[RetrievedChunk]) -> str:
         blocks: list[str] = []
         used = 0

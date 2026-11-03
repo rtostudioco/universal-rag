@@ -3,7 +3,7 @@
 Comandos:
     ingest SOURCE    ingesta un archivo/URL/patrón
     text TEXT        ingesta texto directo
-    query QUESTION   pregunta con respuesta y citas
+    query QUESTION   pregunta con respuesta y citas (--stream para streaming)
     chat             chat interactivo en la terminal
     eval GOLDEN      evalúa la recuperación con un golden set (JSONL)
     collections      lista las colecciones (bases aisladas)
@@ -11,11 +11,13 @@ Comandos:
     documents        lista documentos
     delete DOC_ID    elimina un documento
     clear            vacía el índice
-    serve            arranca la API REST (con mini chat UI en /)
+    serve            arranca la API REST (workbench web en /)
     mcp              arranca el servidor MCP
 
 Fase 4: todos los comandos de contenido aceptan ``--collection`` para operar
 sobre bases de conocimiento aisladas.
+Fase 6: ``query --stream`` imprime la respuesta token a token y ``serve``
+expone el workbench web completo (chat streaming, documentos, ingesta, estado).
 """
 
 from __future__ import annotations
@@ -95,10 +97,49 @@ def query(
     question: str = typer.Argument(..., help="Pregunta en lenguaje natural"),
     k: int | None = typer.Option(None, "--k", "-k", min=1, max=50, help="Fragmentos a recuperar"),
     collection: str | None = typer.Option(None, "--collection", "-C", help="Colección donde consultar"),
+    stream: bool = typer.Option(
+        False, "--stream", "-s", help="Imprime la respuesta en streaming (token a token)"
+    ),
 ) -> None:
     """Responde una pregunta con citas a las fuentes."""
-    answer = _pipeline(collection).query(question, k=k)
+    pipeline = _pipeline(collection)
+    if stream:
+        _query_stream(pipeline, question, k)
+        return
+    answer = pipeline.query(question, k=k)
     console.print(Panel(answer.answer, title=f"Respuesta · {answer.model} · {answer.latency_ms:.0f} ms"))
+    _print_citations(answer)
+
+
+def _query_stream(pipeline: RAGPipeline, question: str, k: int | None) -> None:
+    """Streaming token a token (Fase 6) + tabla de fuentes al terminar."""
+    answer_payload: dict | None = None
+    tokens = 0
+    for event in pipeline.stream_query(question, k=k):
+        etype = event["type"]
+        if etype == "token":
+            print(event["value"], end="", flush=True)  # noqa: T201 — salida en vivo
+            tokens += 1
+        elif etype == "done":
+            answer_payload = event["answer"]
+    print()  # noqa: T201 — cierre de línea del stream
+    if answer_payload:
+        from universal_rag.core.models import Answer
+
+        answer = Answer(**answer_payload)
+        if not tokens:
+            # sin contexto no hay tokens: mostramos la respuesta honesta igualmente
+            console.print(answer.answer)
+        badges = f"· {answer.model} · {answer.latency_ms:.0f} ms"
+        if answer.cached:
+            badges += " · caché"
+        console.print(f"[dim]Fin del stream {badges}[/dim]")
+        _print_citations(answer)
+
+
+def _print_citations(answer) -> None:  # noqa: ANN001
+    if answer.cached:
+        console.print("[yellow]⚡ Servido desde la caché semántica[/yellow]")
     if answer.citations:
         table = Table(title="Fuentes citadas", show_lines=False)
         table.add_column("#", justify="right", style="cyan")

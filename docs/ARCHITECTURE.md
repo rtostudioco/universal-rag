@@ -142,7 +142,7 @@ Contrato: `generate(question, contexts) -> (texto, modelo)`; el pipeline convier
 
 | Interfaz | Archivo | Notas |
 |---|---|---|
-| API REST | `api/app.py` (FastAPI) | `/` (mini chat UI, F3), `/health`, `/stats` (+ métricas y colecciones), `/ingest`, `/ingest/text`, `/ingest/async` (F4), `/jobs`, `/jobs/{id}` (F4), `/query`, `/documents`, `/documents/{id}`, `/collections` (F4) |
+| API REST | `api/app.py` (FastAPI) | `/` (workbench web, F6), `/chat` (mini chat, F3), `/health`, `/stats` (+ métricas y colecciones), `/ingest`, `/ingest/text`, `/ingest/async` (F4), `/jobs`, `/jobs/{id}` (F4), `/query`, `/query/stream` (SSE, F6), `/documents`, `/documents/{id}`, `/collections` (F4) |
 | CLI | `cli.py` (Typer) | `ingest`, `text`, `query`, `chat` (F3), `eval` (F3), `collections` (F4), `documents`, `delete`, `clear`, `stats`, `serve`, `mcp` — todos aceptan `--collection` |
 | MCP | `mcp_server.py` (FastMCP, SDK oficial) | 7 tools `rag_*` (incl. `rag_list_collections`, F4); stdio o streamable-http |
 
@@ -158,6 +158,14 @@ Las tres comparten el mismo `RAGPipeline` (o un `CollectionManager`); no hay ló
 | Auth por API key | `api/auth.py` | Si `RAG_API_KEY` está definida, dependency de FastAPI compara la clave (`X-API-Key` o `Bearer`) con `hmac.compare_digest`; `/` y `/health` abiertos. |
 | Ingesta incremental | `core/pipeline.py` + `store.document_hash()` | `content_hash` (whitespace-insensible) en metadatos de chunks; salto de documentos idénticos. |
 | Docker | `Dockerfile`, `docker-compose.yml` | Imagen slim con healthcheck, volumen `/app/data`; extras `[local]`/`[media]` opcionales. Guía en `docs/DEPLOYMENT.md`. |
+
+## 8c. Streaming y caché semántica (Fase 6)
+
+| Pieza | Archivo | Qué hace |
+|---|---|---|
+| Streaming SSE | `pipeline.stream_query()` + `api/app.py` (`POST /query/stream`) | Eventos `meta` (modelo, retrieval, contextos, preview de fuentes) → `token`* → `done` (Answer completo con citas). `EchoGenerator` trocea su salida (`tokenize_stream`, reconstrucción exacta); `OpenAICompatGenerator` consume el SSE del LLM (`stream=true`) con fallback si el endpoint no soporta streaming. |
+| Caché semántica | `core/cache.py` (`SemanticCache`) | Respuestas indexadas por embedding de la pregunta; acierto si coseno ≥ `RAG_CACHE_THRESHOLD` (0.93). LRU (`RAG_CACHE_MAX_ENTRIES`) + TTL opcional (`RAG_CACHE_TTL`), thread-safe, por colección. Se invalida al ingestar/borrar/vaciar. Solo aplica con parámetros por defecto (`k`/`where` la evitan). Métricas en `stats()["cache"]`. |
+| Workbench | `api/static/workbench.html` | SPA autocontenida en `/` (sin CDNs): Chat en streaming (fetch + ReadableStream), Documentos (listar/eliminar), Ingesta (texto/fuente) y Estado (stats, caché, colecciones, conectores, runtime). El mini chat F3 queda en `/chat`. |
 
 ## 9. Aislamiento de fallos
 

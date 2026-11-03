@@ -1,6 +1,6 @@
 # Universal RAG
 
-> 🧩 **Pipeline plugable de Retrieval-Augmented Generation** — ingesta universal (texto, archivos, URLs, **audio, video, YouTube, Drive, S3/MinIO, Notion**), búsqueda **vectorial o híbrida (BM25 + vectores)** con reranking (cross-encoder **o LLM**), **extracción de tablas**, evaluación de calidad, **colecciones múltiples, jobs asíncronos, auth por API key** y respuestas con **citas verificables, incluidas citas por minuto** en audio/video.
+> 🧩 **Pipeline plugable de Retrieval-Augmented Generation** — ingesta universal (texto, archivos, URLs, **audio, video, YouTube, Drive, S3/MinIO, Notion**), búsqueda **vectorial o híbrida (BM25 + vectores)** con reranking (cross-encoder **o LLM**), **streaming SSE**, **caché semántica**, **workbench web**, **extracción de tablas**, evaluación de calidad, **colecciones múltiples, jobs asíncronos, auth por API key** y respuestas con **citas verificables, incluidas citas por minuto** en audio/video.
 
 Hermano de [Universal MCP](https://github.com/rtostudioco/universal-mcp): misma filosofía **"universal"** — núcleo estable, capacidades que se agregan soltando carpetas, sin tocar el servidor.
 
@@ -24,7 +24,10 @@ Hermano de [Universal MCP](https://github.com/rtostudioco/universal-mcp): misma 
 | 🎯 **Reranking (Fase 3/5)** | Reranker plugable: cross-encoder local (`bge-reranker`, multilingüe) o **reranking con LLM** (`RAG_RERANKER=llm`, cualquier endpoint compatible OpenAI, con degradación elegante). |
 | 📊 **Evaluación (Fase 3)** | Golden sets JSONL con **precision/recall/MRR/hit-rate** — mide la calidad antes de tocar producción. |
 | 📋 **Extracción de tablas (Fase 5)** | Las tablas de DOCX, HTML y PDF (opcional `pdfplumber`) se convierten a **Markdown indexable**: las preguntas sobre celdas recuperan la tabla completa. |
-| 🗨️ **Mini chat UI (Fase 3)** | Chat web incluido (`http://localhost:8100/`), autocontenido y sin CDNs, con citas y minutos visibles. |
+| 🖥️ **Streaming SSE (Fase 6)** | `POST /query/stream` emite eventos `meta` (fuentes) → `token`* → `done` (Answer con citas): primera palabra en milisegundos, con o sin LLM. También en CLI: `universal-rag query "…" --stream`. |
+| ⚡ **Caché semántica (Fase 6)** | Preguntas repetidas o parafraseadas se sirven de caché por similitud coseno (LRU + TTL opcional), sin repetir recuperación ni LLM. Se invalida sola al cambiar el índice y responde `cached: true`. |
+| 🧰 **Workbench web (Fase 6)** | Consola completa en `/`: chat en streaming, gestión de documentos (listar/eliminar), ingesta desde el navegador (texto o fuente) y panel de estado (colecciones, caché, métricas, conectores). Sin CDNs. |
+| 🗨️ **Mini chat UI (Fase 3)** | Chat web minimalista (ahora en `/chat`), autocontenido y sin CDNs, con citas y minutos visibles. |
 | 📚 **Colecciones múltiples (Fase 4)** | Bases de conocimiento aisladas (`legal`, `faq`, `energy`…) sobre un mismo despliegue: ingesta/consulta por colección en API, CLI y MCP. |
 | 🔄 **Jobs asíncronos (Fase 4)** | `POST /ingest/async` + polling en `GET /jobs/{id}` — ingesta de fuentes lentas (audio, video, lotes) sin bloquear al cliente. |
 | 🔐 **Auth por API key (Fase 4)** | Protege la API con `RAG_API_KEY` (`X-API-Key` o `Bearer`); `/` y `/health` siguen abiertos para monitoreo. |
@@ -90,8 +93,9 @@ universal-rag stats         # documentos, fragmentos, conectores, modo de búsqu
 
 ```bash
 universal-rag serve --port 8100
-# → http://localhost:8100/    mini chat UI
-# → http://localhost:8100/docs Swagger UI
+# → http://localhost:8100/      workbench web (Fase 6: chat streaming + gestión)
+# → http://localhost:8100/chat  mini chat clásico
+# → http://localhost:8100/docs  Swagger UI
 ```
 
 ```bash
@@ -114,9 +118,13 @@ curl localhost:8100/jobs/<job_id>                     # → estado del job
 
 # Fase 4 — con autenticación (si RAG_API_KEY está definida)
 curl localhost:8100/stats -H 'X-API-Key: <tu-key>'
+
+# Fase 6 — streaming SSE (eventos: meta → token* → done)
+curl -N -X POST localhost:8100/query/stream -H 'Content-Type: application/json' \
+     -d '{"question": "¿qué dijo sobre costos?"}'
 ```
 
-Endpoints: `/` · `/health` · `/stats` · `/ingest` · `/ingest/text` · `/ingest/async` · `/jobs` · `/jobs/{id}` · `/query` · `/documents` · `/collections`.
+Endpoints: `/` (workbench) · `/chat` · `/health` · `/stats` · `/ingest` · `/ingest/text` · `/ingest/async` · `/jobs` · `/jobs/{id}` · `/query` · `/query/stream` (SSE) · `/documents` · `/collections`.
 
 ### Como servidor MCP (Claude Desktop, Universal MCP…)
 
@@ -151,6 +159,14 @@ for citation in answer.citations:
     minute = f" {citation.timestamp}" if citation.timestamp else ""
     print(f"  [{citation.source}{minute}] {citation.title} → {citation.quote[:80]}")
 #  [audio 03:12–04:05] Entrevista → ...sobre la cláusula de penalización...
+
+# Fase 6: streaming token a token + caché semántica
+for event in rag.stream_query("¿cuál es la cláusula de penalización?"):
+    if event["type"] == "token":
+        print(event["value"], end="", flush=True)
+    elif event["type"] == "done":
+        print("\ncitas:", len(event["answer"]["citations"]))
+rag.query("¿cuál es la cláusula de penalización?").cached   # → True (⚡ caché)
 
 # Fase 4: colecciones aisladas que comparten embedder/generator
 manager = CollectionManager()
@@ -188,6 +204,10 @@ print(manager.list_collections())   # resumen por colección
 | `RAG_API_KEY` | *(vacío = sin auth)* | Si se define, la API exige `X-API-Key`/`Bearer` (Fase 4) |
 | `RAG_JOBS_WORKERS` | `2` | Hilos del pool de ingesta asíncrona (Fase 4) |
 | `RAG_JOBS_MAX_HISTORY` | `200` | Jobs recordados en memoria (Fase 4) |
+| `RAG_CACHE_ENABLED` | `1` | Caché semántica de consultas por colección (Fase 6) |
+| `RAG_CACHE_THRESHOLD` | `0.93` | Similitud coseno mínima para servir de caché (Fase 6) |
+| `RAG_CACHE_MAX_ENTRIES` | `512` | Entradas máximas (LRU) de la caché (Fase 6) |
+| `RAG_CACHE_TTL` | *(vacío = sin TTL)* | Segundos de vida de cada entrada de caché (Fase 6) |
 
 Ejemplo con Ollama local:
 
@@ -207,12 +227,17 @@ fuente ──▶ ConnectorRegistry (auto-descubrimiento + prioridad) ──▶ D
                                         Chunker ──▶ Chunks ──▶ Embedder ──▶ VectorStore (Chroma)
                                         (texto: párrafos)    (media: por minuto [mm:ss])
                                                                      │
-        pregunta ──▶ Retriever ◀──────────────────────────────────────┘
+        pregunta ──▶ Caché semántica (F6, coseno ≥ threshold) ──▶ hit: tokens desde caché
+          │ miss
+          ▼
+        Retriever ◀────────────────────────────────────┘
           │  │ vectorial (coseno)
           │  └ híbrido: + BM25 (F3) ── fusión RRF/weighted
           │ RetrievedChunks ──▶ Reranker (F3: cross-encoder · F5: LLM, opcionales)
                         ▼
                    Generator (OpenAI-compat / echo) ──▶ Answer + Citations [1][2]… [00:00–01:05]
+                        │  query():      Answer completo
+                        └  stream_query(): meta → token* → done  (SSE, F6)
 ```
 
 Detalles en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Búsqueda híbrida y evaluación en [`docs/RETRIEVAL.md`](docs/RETRIEVAL.md) · Cómo agregar conectores en [`docs/ADDING_CONNECTORS.md`](docs/ADDING_CONNECTORS.md).
@@ -224,7 +249,8 @@ Detalles en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Búsqueda híbrida
 - **Fase 3 (✅ v0.3.0)** — **búsqueda híbrida** (BM25 + vectores, fusión RRF/weighted), **reranking** (cross-encoder local), **evaluación** (precision/recall/MRR con golden sets) y **mini chat UI**.
 - **Fase 4 (✅ v0.4.0)** — **producción y escalado**: colecciones múltiples, jobs asíncronos con polling, auth por API key, métricas runtime, ingesta incremental (skip sin cambios) y despliegue Docker.
 - **Fase 5 (✅ v0.5.0)** — **ecosistema de fuentes y calidad**: conector **S3/MinIO** (objetos y prefijos), conector **Notion** (páginas, bases de datos y búsqueda vía API oficial), **reranking con LLM** (`RAG_RERANKER=llm`, degradación elegante) y **extracción de tablas** a Markdown en DOCX/HTML/PDF.
-- **Fase 6 (futuro)** — respuestas en streaming (SSE), workbench web completo (ingesta y gestión de documentos desde el navegador) y caché semántica de consultas.
+- **Fase 6 (✅ v0.6.0)** — **experiencia en tiempo real**: **streaming SSE** (`/query/stream` + `--stream` en CLI, con o sin LLM), **caché semántica** (coseno + LRU + TTL, invalidación automática) y **workbench web** completo (chat streaming, gestión de documentos, ingesta desde el navegador y panel de estado).
+- **Fase 7 (futuro)** — conectores empresariales (Confluence, SharePoint), memoria conversacional multi-turno y sincronización programada de fuentes.
 
 > 💡 **Calidad del ASR**: el modelo `base` es rápido y ligero; para español u otros idiomas no ingleses recomendamos `RAG_ASR_MODEL=small` (o `medium`) — la precisión mejora notablemente. Audio con música de fondo o voces sintéticas degrada la precisión de cualquier Whisper.
 
@@ -233,7 +259,7 @@ Detalles en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Búsqueda híbrida
 ```bash
 git clone https://github.com/rtostudioco/universal-rag && cd universal-rag
 pip install -e ".[dev]"
-pytest                # 265 tests (sin red, sin modelos pesados)
+pytest                # 306 tests (sin red, sin modelos pesados)
 ruff check .
 ```
 

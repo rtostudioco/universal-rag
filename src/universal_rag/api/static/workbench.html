@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Universal RAG · Workbench</title>
+<style>
+  :root{
+    --bg:#0e0e11; --panel:#16161b; --panel-2:#1d1d24; --line:#2a2a33;
+    --text:#ececf1; --muted:#9b9ba7; --accent:#f5a623; --accent-2:#34d399;
+    --danger:#ef4444; --user:#2c2c35; --radius:14px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg);color:var(--text);display:flex;flex-direction:column;
+  }
+  header{
+    display:flex;align-items:center;gap:12px;padding:12px 20px;
+    border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap;
+  }
+  .logo{
+    width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+    background:linear-gradient(135deg,var(--accent),#d97706);font-weight:800;color:#1a1a1a;
+  }
+  .title{font-weight:700;font-size:1.02rem}
+  .subtitle{font-size:.72rem;color:var(--muted)}
+  .status{display:flex;align-items:center;gap:6px;font-size:.75rem;color:var(--muted);margin-left:auto}
+  .dot{width:8px;height:8px;border-radius:50%;background:#6b7280;transition:background .3s}
+  .dot.ok{background:var(--accent-2)}
+  .dot.bad{background:var(--danger)}
+  .btn-ghost{
+    border:1px solid var(--line);background:transparent;color:var(--muted);
+    padding:6px 12px;border-radius:9px;font-size:.78rem;cursor:pointer;transition:.2s;
+    font-family:inherit;
+  }
+  .btn-ghost:hover{color:var(--text);border-color:var(--muted)}
+  .collection{
+    border:1px solid var(--line);background:var(--panel-2);color:var(--muted);
+    padding:6px 10px;border-radius:9px;font-size:.78rem;cursor:pointer;transition:.2s;
+    font-family:inherit;outline:none;max-width:150px;
+  }
+  .collection:hover,.collection:focus{color:var(--text);border-color:var(--muted)}
+  nav.tabs{
+    display:flex;gap:4px;padding:8px 20px 0;background:var(--panel);
+    border-bottom:1px solid var(--line);overflow-x:auto;
+  }
+  nav.tabs button{
+    border:1px solid transparent;border-bottom:none;background:transparent;color:var(--muted);
+    padding:9px 18px;border-radius:10px 10px 0 0;font:inherit;font-size:.85rem;font-weight:600;
+    cursor:pointer;transition:.2s;white-space:nowrap;
+  }
+  nav.tabs button:hover{color:var(--text)}
+  nav.tabs button.active{background:var(--bg);color:var(--accent);border-color:var(--line)}
+  main{flex:1;overflow-y:auto}
+  section.tab{display:none;height:100%}
+  section.tab.active{display:block}
+  /* ---- chat ---- */
+  #tab-chat{display:none;flex-direction:column}
+  #tab-chat.active{display:flex}
+  .chat-log{flex:1;overflow-y:auto;padding:22px 16px}
+  .wrap{max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+  .empty{text-align:center;color:var(--muted);padding:38px 10px}
+  .empty h1{font-size:1.3rem;color:var(--text);margin-bottom:6px}
+  .empty p{font-size:.9rem;margin-bottom:20px}
+  .examples{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+  .example{
+    border:1px solid var(--line);background:var(--panel);color:var(--text);
+    padding:9px 14px;border-radius:999px;font-size:.82rem;cursor:pointer;transition:.2s;
+  }
+  .example:hover{border-color:var(--accent);color:var(--accent)}
+  .msg{display:flex;flex-direction:column;gap:6px}
+  .msg .who{font-size:.72rem;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
+  .bubble{
+    padding:13px 16px;border-radius:var(--radius);line-height:1.55;font-size:.93rem;
+    white-space:pre-wrap;word-wrap:break-word;
+  }
+  .msg.user{align-items:flex-end}
+  .msg.user .bubble{background:var(--user);max-width:85%}
+  .msg.bot .bubble{background:var(--panel);border:1px solid var(--line);border-top-left-radius:4px}
+  .cursor{display:inline-block;width:8px;height:15px;background:var(--accent);
+    vertical-align:text-bottom;margin-left:2px;animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+  .badge{
+    font-size:.68rem;color:var(--muted);border:1px solid var(--line);
+    padding:2px 8px;border-radius:999px;background:var(--panel);
+  }
+  .badge.acc{color:var(--accent);border-color:#5a4218}
+  .badge.ok{color:var(--accent-2);border-color:#1d4a38}
+  .cites{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+  .cite{
+    border:1px solid var(--line);border-left:3px solid var(--accent);
+    background:var(--panel-2);border-radius:10px;padding:9px 12px;font-size:.8rem;
+  }
+  .cite .head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:4px}
+  .cite .num{
+    background:var(--accent);color:#1a1a1a;font-weight:700;font-size:.68rem;
+    width:18px;height:18px;border-radius:6px;display:grid;place-items:center;flex:none;
+  }
+  .cite .src{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
+  .cite .ts{color:var(--accent-2);font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap}
+  .cite .score{color:var(--muted);margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .cite .quote{color:var(--muted);line-height:1.45}
+  .thinking{display:flex;gap:5px;padding:6px 2px}
+  .thinking span{
+    width:7px;height:7px;border-radius:50%;background:var(--muted);
+    animation:pulse 1.2s infinite ease-in-out;
+  }
+  .thinking span:nth-child(2){animation-delay:.18s}
+  .thinking span:nth-child(3){animation-delay:.36s}
+  @keyframes pulse{0%,80%,100%{opacity:.25;transform:scale(.85)}40%{opacity:1;transform:scale(1)}}
+  .error{border-left-color:var(--danger) !important;color:#fca5a5}
+  .chat-inputbar{
+    border-top:1px solid var(--line);background:var(--panel);padding:14px 16px
+      calc(14px + env(safe-area-inset-bottom,0px));
+  }
+  .chat-inputbar .inner{max-width:760px;margin:0 auto;display:flex;gap:10px;align-items:flex-end}
+  textarea{
+    flex:1;resize:none;background:var(--panel-2);border:1px solid var(--line);
+    color:var(--text);border-radius:12px;padding:11px 14px;font:inherit;font-size:.92rem;
+    min-height:46px;max-height:140px;outline:none;transition:border-color .2s;
+  }
+  textarea:focus{border-color:var(--accent)}
+  textarea::placeholder{color:var(--muted)}
+  button.send{
+    background:var(--accent);color:#1a1a1a;border:none;border-radius:12px;
+    width:46px;height:46px;cursor:pointer;display:grid;place-items:center;transition:.2s;flex:none;
+  }
+  button.send:hover{filter:brightness(1.1)}
+  button.send:disabled{opacity:.45;cursor:not-allowed}
+  button.send svg{width:20px;height:20px}
+  /* ---- paneles (documentos / ingesta / estado) ---- */
+  .panel-wrap{max-width:960px;margin:0 auto;padding:22px 16px 40px}
+  .panel-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+  .panel-head h2{font-size:1.05rem}
+  .panel-head .spacer{flex:1}
+  .card{
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px;margin-bottom:14px;
+  }
+  .card h3{font-size:.9rem;margin-bottom:10px;color:var(--accent)}
+  .card p.hint{font-size:.78rem;color:var(--muted);margin-bottom:10px}
+  .field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
+  .field label{font-size:.75rem;color:var(--muted)}
+  input[type=text]{
+    background:var(--panel-2);border:1px solid var(--line);color:var(--text);
+    border-radius:9px;padding:9px 12px;font:inherit;font-size:.88rem;outline:none;transition:border-color .2s;
+  }
+  input[type=text]:focus{border-color:var(--accent)}
+  .btn{
+    background:var(--accent);color:#1a1a1a;border:none;border-radius:9px;
+    padding:9px 18px;font:inherit;font-size:.85rem;font-weight:700;cursor:pointer;transition:.2s;
+  }
+  .btn:hover{filter:brightness(1.08)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn.danger{background:transparent;color:#fca5a5;border:1px solid #5b2020;padding:5px 10px;font-size:.72rem;font-weight:600}
+  .btn.danger:hover{border-color:var(--danger)}
+  .check{display:flex;align-items:center;gap:7px;font-size:.78rem;color:var(--muted);margin:8px 0}
+  .check input{accent-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:.82rem}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
+  td.muted, .muted{color:var(--muted)}
+  .table-scroll{overflow-x:auto}
+  .uri-cell{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+  .result-box{
+    margin-top:10px;border:1px solid var(--line);border-radius:9px;background:var(--panel-2);
+    padding:10px 12px;font-size:.8rem;color:var(--muted);white-space:pre-wrap;display:none;
+  }
+  .result-box.ok{color:var(--accent-2)}
+  .result-box.err{color:#fca5a5}
+  .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+  .stat{
+    background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:12px 14px;
+  }
+  .stat .v{font-size:1.25rem;font-weight:700;color:var(--accent)}
+  .stat .k{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+  .empty-state{color:var(--muted);text-align:center;padding:26px 8px;font-size:.85rem}
+  .chip{display:inline-block;border:1px solid var(--line);border-radius:999px;
+    padding:2px 9px;font-size:.68rem;color:var(--muted);margin:2px 3px 2px 0;background:var(--panel-2)}
+  main::-webkit-scrollbar,.chat-log::-webkit-scrollbar{width:9px}
+  main::-webkit-scrollbar-thumb,.chat-log::-webkit-scrollbar-thumb{background:var(--line);border-radius:9px}
+  @media(max-width:640px){
+    header{padding:10px 12px}
+    .subtitle{display:none}
+    .status span#status-text{display:none}
+    .msg.user .bubble{max-width:94%}
+    .collection{max-width:110px}
+    .panel-wrap{padding:16px 10px 32px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">R</div>
+  <div>
+    <div class="title">Universal RAG · Workbench</div>
+    <div class="subtitle">chat en streaming, ingesta y gestión — citas verificables</div>
+  </div>
+  <div class="status"><span class="dot" id="dot"></span><span id="status-text">conectando…</span></div>
+  <select class="collection" id="collection" title="Colección de conocimiento" aria-label="Colección de conocimiento">
+    <option value="default">default</option>
+  </select>
+  <button class="btn-ghost" id="apikey" title="Configurar X-API-Key (si la API la exige)">API key</button>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Secciones">
+  <button class="active" data-tab="chat" role="tab" aria-selected="true">Chat</button>
+  <button data-tab="docs" role="tab" aria-selected="false">Documentos</button>
+  <button data-tab="ingest" role="tab" aria-selected="false">Ingestar</button>
+  <button data-tab="status" role="tab" aria-selected="false">Estado</button>
+</nav>
+
+<main>
+  <!-- ============================== CHAT ============================== -->
+  <section class="tab active" id="tab-chat">
+    <div class="chat-log" id="chat-log">
+      <div class="wrap" id="wrap">
+        <div class="empty" id="empty">
+          <h1>¿Qué quieres preguntarle a tus documentos?</h1>
+          <p>Streaming token a token vía <code>/query/stream</code>, con citas verificables y caché semántica.</p>
+          <div class="examples" id="examples"></div>
+        </div>
+      </div>
+    </div>
+    <div class="chat-inputbar">
+      <div class="inner">
+        <textarea id="input" rows="1" placeholder="Escribe tu pregunta… (Enter para enviar)"></textarea>
+        <button class="send" id="send" aria-label="Enviar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h14M13 6l6 6-6 6"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================== DOCUMENTOS =========================== -->
+  <section class="tab" id="tab-docs">
+    <div class="panel-wrap">
+      <div class="panel-head">
+        <h2>Documentos ingestado</h2>
+        <div class="spacer"></div>
+        <button class="btn-ghost" id="docs-refresh">Refrescar</button>
+      </div>
+      <div class="card table-scroll">
+        <table id="docs-table">
+          <thead><tr><th>Título</th><th>Fuente</th><th>URI</th><th>Fragmentos</th><th></th></tr></thead>
+          <tbody id="docs-body"></tbody>
+        </table>
+        <div class="empty-state" id="docs-empty" style="display:none">
+          Sin documentos todavía. Usa la pestaña «Ingestar» para añadir contenido.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ INGESTAR ============================ -->
+  <section class="tab" id="tab-ingest">
+    <div class="panel-wrap">
+      <div class="panel-head"><h2>Ingestar contenido</h2></div>
+      <div class="card">
+        <h3>Texto directo</h3>
+        <p class="hint">Crea un documento a partir de texto plano (notas, transcripciones, texto crudo).</p>
+        <div class="field">
+          <label for="ing-title">Título (opcional)</label>
+          <input type="text" id="ing-title" placeholder="Ej. Notas de la reunión 12">
+        </div>
+        <div class="field">
+          <label for="ing-text">Contenido</label>
+          <textarea id="ing-text" rows="6" placeholder="Pega aquí el texto…"></textarea>
+        </div>
+        <button class="btn" id="ing-text-btn">Ingestar texto</button>
+        <div class="result-box" id="ing-text-result"></div>
+      </div>
+      <div class="card">
+        <h3>Fuente (URL, ruta, globo…)</h3>
+        <p class="hint">Resolución automática de conector: <span class="chip">url</span><span class="chip">file</span><span class="chip">youtube</span><span class="chip">drive</span><span class="chip">s3</span><span class="chip">notion</span>…</p>
+        <div class="field">
+          <label for="ing-source">Fuente</label>
+          <input type="text" id="ing-source" placeholder="Ej. https://ejemplo.com/articulo o docs/*.pdf">
+        </div>
+        <div class="check">
+          <input type="checkbox" id="ing-force">
+          <label for="ing-force">Forzar re-ingesta aunque no haya cambios</label>
+        </div>
+        <button class="btn" id="ing-source-btn">Ingestar fuente</button>
+        <div class="result-box" id="ing-source-result"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= ESTADO ============================= -->
+  <section class="tab" id="tab-status">
+    <div class="panel-wrap">
+      <div class="panel-head">
+        <h2>Estado del servicio</h2>
+        <div class="spacer"></div>
+        <button class="btn-ghost" id="status-refresh">Refrescar</button>
+      </div>
+      <div class="stats-grid" id="stats-grid"></div>
+      <div class="card">
+        <h3>Caché semántica</h3>
+        <div id="cache-info" class="muted" style="font-size:.85rem">—</div>
+      </div>
+      <div class="card table-scroll">
+        <h3>Colecciones</h3>
+        <table><thead><tr><th>Nombre</th><th>Documentos</th><th>Fragmentos</th><th>Store</th><th>Búsqueda</th><th></th></tr></thead>
+        <tbody id="coll-body"></tbody></table>
+      </div>
+      <div class="card">
+        <h3>Conectores</h3>
+        <div id="connectors-info" class="muted" style="font-size:.85rem">—</div>
+      </div>
+      <div class="card">
+        <h3>Runtime</h3>
+        <div id="runtime-info" class="muted" style="font-size:.85rem">—</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+(function(){
+  "use strict";
+  var $ = function(id){ return document.getElementById(id); };
+  var dot = $("dot"), statusText = $("status-text"),
+      collection = $("collection"), apiKeyBtn = $("apikey"),
+      input = $("input"), send = $("send"),
+      wrap = $("wrap"), empty = $("empty"), examples = $("examples"),
+      busy = false;
+
+  var apiKey = localStorage.getItem("rag-api-key") || "";
+
+  function authHeaders(){
+    return apiKey ? { "X-API-Key": apiKey } : {};
+  }
+  function renderApiKeyBtn(){
+    apiKeyBtn.textContent = apiKey ? "API key ✓" : "API key";
+    apiKeyBtn.title = apiKey ? "Cambiar o borrar la API key" : "Configurar X-API-Key (si la API la exige)";
+  }
+  renderApiKeyBtn();
+  apiKeyBtn.addEventListener("click", function(){
+    if(apiKey){
+      if(confirm("¿Borrar la API key guardada? (Cancelar para cambiarla)")){
+        apiKey = ""; localStorage.removeItem("rag-api-key"); renderApiKeyBtn(); return;
+      }
+    }
+    var key = prompt("API key (X-API-Key). Deja vacío para cancelar:");
+    if(key !== null && key.trim()){ apiKey = key.trim(); localStorage.setItem("rag-api-key", apiKey); renderApiKeyBtn(); }
+  });
+
+  function esc(s){
+    return String(s == null ? "" : s)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;");
+  }
+
+  // ------------------------------------------------------------- pestañas
+  var tabs = document.querySelectorAll("nav.tabs button");
+  tabs.forEach(function(btn){
+    btn.addEventListener("click", function(){
+      tabs.forEach(function(b){ b.classList.remove("active"); b.setAttribute("aria-selected","false"); });
+      btn.classList.add("active"); btn.setAttribute("aria-selected","true");
+      document.querySelectorAll("section.tab").forEach(function(sec){ sec.classList.remove("active"); });
+      var sec = $("tab-" + btn.dataset.tab);
+      sec.classList.add("active");
+      if(btn.dataset.tab === "docs") loadDocuments();
+      if(btn.dataset.tab === "status") loadStatus();
+    });
+  });
+
+  // --------------------------------------------------------- colecciones
+  function currentCollection(){ return collection.value || "default"; }
+  collection.addEventListener("change", function(){
+    localStorage.setItem("rag-collection", collection.value);
+    loadDocuments();
+  });
+
+  function loadCollections(){
+    fetch("/collections", { headers: authHeaders() })
+      .then(function(res){
+        if(res.status === 401){ promptApiKey(loadCollections); return []; }
+        return res.ok ? res.json() : [];
+      })
+      .then(function(rows){
+        var names = (rows || []).map(function(r){ return r.name; });
+        if(names.indexOf("default") === -1) names.unshift("default");
+        collection.innerHTML = "";
+        names.forEach(function(n){
+          var o = document.createElement("option");
+          o.value = n; o.textContent = n;
+          collection.appendChild(o);
+        });
+        var saved = localStorage.getItem("rag-collection");
+        if(saved && names.indexOf(saved) !== -1) collection.value = saved;
+      })
+      .catch(function(){ /* sin colecciones aún */ });
+  }
+
+  function promptApiKey(onReady){
+    var key = prompt("Esta API requiere una API key (X-API-Key):");
+    if(key){ apiKey = key.trim(); localStorage.setItem("rag-api-key", apiKey); renderApiKeyBtn(); if(onReady) onReady(); }
+  }
+
+  // ================================================================= CHAT
+  var SUGGESTIONS = [
+    "Resumen de la base de conocimiento",
+    "¿Qué documentos hay disponibles?",
+    "Hazme un resumen por temas"
+  ];
+  SUGGESTIONS.forEach(function(text){
+    var b = document.createElement("button");
+    b.className = "example"; b.textContent = text;
+    b.addEventListener("click", function(){ ask(text); });
+    examples.appendChild(b);
+  });
+
+  function scrollDown(){
+    var log = $("chat-log");
+    log.scrollTop = log.scrollHeight;
+  }
+  function hideEmpty(){ if(empty && empty.parentNode) empty.remove(); }
+
+  function addUser(text){
+    hideEmpty();
+    var div = document.createElement("div");
+    div.className = "msg user";
+    div.innerHTML = '<div class="who">Tú</div><div class="bubble"></div>';
+    div.querySelector(".bubble").textContent = text;
+    wrap.appendChild(div); scrollDown();
+  }
+
+  function addStreamingBot(){
+    hideEmpty();
+    var div = document.createElement("div");
+    div.className = "msg bot"; div.id = "streaming-msg";
+    div.innerHTML = '<div class="who">Universal RAG</div>' +
+      '<div class="bubble"><span class="stream-text"></span><span class="cursor"></span></div>' +
+      '<div class="badges" id="stream-badges"></div>' +
+      '<div class="cites" id="stream-cites"></div>';
+    wrap.appendChild(div); scrollDown();
+    return div;
+  }
+
+  function badge(label, cls){
+    return '<span class="badge' + (cls ? " " + cls : "") + '">' + esc(label) + '</span>';
+  }
+
+  function renderCitations(container, citations){
+    if(!citations || !citations.length){ container.innerHTML = ""; return; }
+    var html = "";
+    citations.forEach(function(c, i){
+      html += '<div class="cite"><div class="head">' +
+        '<span class="num">' + (i + 1) + '</span>' +
+        '<span class="src" title="' + esc(c.uri || "") + '">' + esc(c.title || c.source || "fuente") + '</span>' +
+        (c.timestamp ? '<span class="ts">⏱ ' + esc(c.timestamp) + '</span>' : '') +
+        '<span class="score">score ' + Number(c.score || 0).toFixed(3) + '</span>' +
+        '</div><div class="quote">' + esc(c.quote || "") + '</div></div>';
+    });
+    container.innerHTML = html;
+  }
+
+  function handleSSE(raw, state){
+    var event = "message", data = "";
+    raw.split("\n").forEach(function(line){
+      if(line.indexOf("event:") === 0) event = line.slice(6).trim();
+      else if(line.indexOf("data:") === 0) data += line.slice(5).trim();
+    });
+    if(!data) return;
+    var payload;
+    try { payload = JSON.parse(data); } catch(e){ return; }
+    if(event === "meta"){
+      state.badges.innerHTML = "";
+      if(payload.cached) state.badges.innerHTML += badge("⚡ caché semántica", "ok");
+      if(payload.model) state.badges.innerHTML += badge(payload.model, "acc");
+      if(payload.retrieval) state.badges.innerHTML += badge(payload.retrieval);
+      if(typeof payload.context_count === "number") state.badges.innerHTML += badge(payload.context_count + " fragmentos");
+      scrollDown();
+    } else if(event === "token"){
+      state.textSpan.textContent += payload;
+      scrollDown();
+    } else if(event === "done"){
+      state.badges.innerHTML += badge(Number(payload.latency_ms || 0).toFixed(0) + " ms");
+      renderCitations(state.cites, payload.citations);
+      scrollDown();
+    } else if(event === "error"){
+      state.bubble.classList.add("error");
+      state.textSpan.textContent += "\n" + (payload.error || "error desconocido");
+      scrollDown();
+    }
+  }
+
+  function ask(text){
+    text = (text || "").trim();
+    if(!text || busy) return;
+    busy = true; send.disabled = true;
+    addUser(text);
+    var div = addStreamingBot();
+    var state = {
+      bubble: div.querySelector(".bubble"),
+      textSpan: div.querySelector(".stream-text"),
+      badges: div.querySelector("#stream-badges"),
+      cites: div.querySelector("#stream-cites")
+    };
+    // streaming real vía /query/stream (SSE) — Fase 6
+    fetch("/query/stream", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({ question: text, collection: currentCollection() })
+    }).then(function(res){
+      if(res.status === 401 && !apiKey){ promptApiKey(null); throw new Error("autenticación requerida"); }
+      if(res.status === 401){ throw new Error("API key inválida"); }
+      if(!res.ok || !res.body) return res.json().catch(function(){ return {}; })
+        .then(function(body){ throw new Error(body.detail ? JSON.stringify(body.detail) : ("HTTP " + res.status)); });
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = "";
+      function pump(){
+        return reader.read().then(function(chunk){
+          if(chunk.done){
+            var cursor = div.querySelector(".cursor");
+            if(cursor) cursor.remove();
+            busy = false; send.disabled = false; input.focus();
+            return;
+          }
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var idx;
+          while((idx = buffer.indexOf("\n\n")) !== -1){
+            var raw = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            if(raw.trim()) handleSSE(raw, state);
+          }
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function(err){
+      state.bubble.classList.add("error");
+      state.textSpan.textContent = "Error: " + err.message;
+      var cursor = div.querySelector(".cursor");
+      if(cursor) cursor.remove();
+      busy = false; send.disabled = false; input.focus();
+    });
+  }
+
+  function submit(){
+    var text = input.value.trim();
+    if(!text || busy) return;
+    input.value = ""; input.style.height = "auto";
+    ask(text);
+  }
+  send.addEventListener("click", submit);
+  input.addEventListener("keydown", function(e){
+    if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); submit(); }
+  });
+  input.addEventListener("input", function(){
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 140) + "px";
+  });
+
+  // ========================================================== DOCUMENTOS
+  function loadDocuments(){
+    var body = $("docs-body"), emptyState = $("docs-empty");
+    fetch("/documents?collection=" + encodeURIComponent(currentCollection()), { headers: authHeaders() })
+      .then(function(res){ return res.ok ? res.json() : (res.status === 401 ? (promptApiKey(loadDocuments), []) : []); })
+      .then(function(rows){
+        rows = rows || [];
+        body.innerHTML = "";
+        emptyState.style.display = rows.length ? "none" : "";
+        rows.forEach(function(doc){
+          var tr = document.createElement("tr");
+          tr.innerHTML =
+            '<td>' + esc(doc.title || "(sin título)") + '</td>' +
+            '<td class="muted">' + esc(doc.source || "—") + '</td>' +
+            '<td class="uri-cell" title="' + esc(doc.uri || "") + '">' + esc(doc.uri || "—") + '</td>' +
+            '<td>' + esc(doc.chunks != null ? doc.chunks : "—") + '</td>' +
+            '<td><button class="btn danger" data-id="' + esc(doc.document_id) + '">Eliminar</button></td>';
+          tr.querySelector("button").addEventListener("click", function(){
+            if(!confirm("¿Eliminar «" + (doc.title || doc.document_id) + "» y sus fragmentos?")) return;
+            fetch("/documents/" + encodeURIComponent(doc.document_id) +
+              "?collection=" + encodeURIComponent(currentCollection()),
+              { method: "DELETE", headers: authHeaders() })
+              .then(function(res){ if(res.ok) loadDocuments(); else alert("No se pudo eliminar (HTTP " + res.status + ")"); })
+              .catch(function(){ alert("Error de red al eliminar"); });
+          });
+          body.appendChild(tr);
+        });
+      })
+      .catch(function(){ emptyState.style.display = ""; });
+  }
+  $("docs-refresh").addEventListener("click", loadDocuments);
+
+  // ============================================================ INGESTAR
+  function showResult(boxId, text, ok){
+    var box = $(boxId);
+    box.style.display = "block";
+    box.className = "result-box " + (ok ? "ok" : "err");
+    box.textContent = text;
+  }
+  function renderIngestResult(boxId, result){
+    var lines = [];
+    if(result.errors && result.errors.length) lines.push("✗ " + result.errors.join("\n✗ "));
+    if(result.unchanged) lines.push("⏭ " + result.unchanged + " documento(s) sin cambios (ya ingestado).");
+    if(result.documents) lines.push("✓ " + result.documents + " documento(s), " + result.chunks + " fragmento(s)"
+      + (result.skipped ? ", " + result.skipped + " omitido(s)" : "") + ".");
+    if(!lines.length) lines.push("Sin cambios.");
+    showResult(boxId, lines.join("\n"), !result.errors || !result.errors.length);
+  }
+
+  $("ing-text-btn").addEventListener("click", function(){
+    var btn = this, text = $("ing-text").value.trim();
+    if(!text){ showResult("ing-text-result", "Escribe algún texto primero.", false); return; }
+    btn.disabled = true;
+    fetch("/ingest/text", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({
+        text: text,
+        title: $("ing-title").value.trim() || null,
+        collection: currentCollection()
+      })
+    })
+    .then(function(res){
+      if(res.status === 401){ promptApiKey(null); throw new Error("autenticación requerida"); }
+      if(!res.ok) return res.json().catch(function(){ return {}; })
+        .then(function(body){ throw new Error(typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail || ("HTTP " + res.status))); });
+      return res.json();
+    })
+    .then(function(result){ renderIngestResult("ing-text-result", result); $("ing-text").value = ""; })
+    .catch(function(err){ showResult("ing-text-result", "Error: " + err.message, false); })
+    .finally(function(){ btn.disabled = false; });
+  });
+
+  $("ing-source-btn").addEventListener("click", function(){
+    var btn = this, source = $("ing-source").value.trim();
+    if(!source){ showResult("ing-source-result", "Indica una fuente (URL, ruta o globo).", false); return; }
+    btn.disabled = true;
+    showResult("ing-source-result", "Ingestando… (las fuentes grandes pueden tardar)", true);
+    fetch("/ingest", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({
+        source: source,
+        force: $("ing-force").checked,
+        collection: currentCollection()
+      })
+    })
+    .then(function(res){
+      if(res.status === 401){ promptApiKey(null); throw new Error("autenticación requerida"); }
+      if(!res.ok) return res.json().catch(function(){ return {}; })
+        .then(function(body){ throw new Error(typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail || ("HTTP " + res.status))); });
+      return res.json();
+    })
+    .then(function(result){ renderIngestResult("ing-source-result", result); })
+    .catch(function(err){ showResult("ing-source-result", "Error: " + err.message, false); })
+    .finally(function(){ btn.disabled = false; });
+  });
+
+  // ============================================================== ESTADO
+  function statCard(value, label){
+    return '<div class="stat"><div class="v">' + esc(value) + '</div><div class="k">' + esc(label) + '</div></div>';
+  }
+  function loadStatus(){
+    fetch("/stats", { headers: authHeaders() })
+      .then(function(res){ return res.ok ? res.json() : (res.status === 401 ? (promptApiKey(loadStatus), {}) : {}); })
+      .then(function(data){
+        if(!data || !data.version) return;
+        var grid = $("stats-grid");
+        grid.innerHTML =
+          statCard("v" + data.version, "versión") +
+          statCard(data.documents != null ? data.documents : "—", "documentos") +
+          statCard(data.chunks != null ? data.chunks : "—", "fragmentos") +
+          statCard(data.embedder || "—", "embedder") +
+          statCard(data.generator || "—", "generador") +
+          statCard(data.retrieval || "—", "búsqueda");
+        var cache = data.cache || {};
+        $("cache-info").textContent = cache.enabled
+          ? "activa · " + (cache.entries || 0) + " entrada(s) · " + (cache.hits || 0) + " aciertos / "
+            + (cache.misses || 0) + " fallos · tasa " + (cache.hit_rate != null ? cache.hit_rate : 0)
+            + " · umbral " + (cache.threshold != null ? cache.threshold : "—")
+          : "desactivada (RAG_CACHE_ENABLED=0)";
+        var colls = data.collections || [];
+        var collBody = $("coll-body");
+        collBody.innerHTML = "";
+        if(!colls.length){
+          collBody.innerHTML = '<tr><td colspan="5" class="muted">Sin colecciones instanciadas.</td></tr>';
+        }
+        colls.forEach(function(c){
+          var tr = document.createElement("tr");
+          tr.innerHTML = '<td>' + esc(c.name) + '</td><td>' + esc(c.documents) + '</td><td>' + esc(c.chunks) +
+            '</td><td class="muted">' + esc(c.store || "—") + '</td><td class="muted">' + esc(c.retrieval || "—") + '</td>' +
+            '<td>' + (c.name !== "default" ? '<button class="btn danger" data-name="' + esc(c.name) + '">Vaciar</button>' : '') + '</td>';
+          var del = tr.querySelector("button");
+          if(del) del.addEventListener("click", function(){
+            if(!confirm("¿Vaciar y descartar la colección «" + c.name + "»?")) return;
+            fetch("/collections/" + encodeURIComponent(c.name), { method: "DELETE", headers: authHeaders() })
+              .then(function(res){ if(res.ok) loadStatus(); else alert("No se pudo vaciar (HTTP " + res.status + ")"); })
+              .catch(function(){ alert("Error de red"); });
+          });
+          collBody.appendChild(tr);
+        });
+        var report = data.connector_report || [];
+        var connHtml = "";
+        if(data.connectors && data.connectors.length){
+          data.connectors.forEach(function(name){
+            var entry = report.filter(function(r){ return r.name === name; })[0];
+            var ok = entry ? entry.ok : true;
+            connHtml += '<span class="chip" style="' + (ok ? "" : "color:#fca5a5;border-color:#5b2020") + '">' +
+              (ok ? "✓ " : "✗ ") + esc(name) + '</span>';
+          });
+        } else { connHtml = "Sin conectores."; }
+        $("connectors-info").innerHTML = connHtml;
+        var rt = data.runtime || {};
+        $("runtime-info").textContent =
+          "uptime " + (rt.uptime_seconds || 0) + " s · peticiones " + (rt.requests || 0) +
+          " · consultas " + (rt.queries || 0) + " (stream " + (rt.queries_stream || 0) + ")" +
+          " · ingestas " + (rt.ingests || 0) + " · errores " + (rt.errors || 0);
+      })
+      .catch(function(){ /* silencioso */ });
+  }
+  $("status-refresh").addEventListener("click", loadStatus);
+
+  // ---------------------------------------------------------------- boot
+  fetch("/health").then(function(res){ return res.json(); }).then(function(data){
+    dot.className = "dot ok";
+    statusText.textContent = "en línea · v" + (data.version || "?");
+    loadCollections();
+  }).catch(function(){
+    dot.className = "dot bad";
+    statusText.textContent = "sin conexión con la API";
+  });
+
+  input.focus();
+})();
+</script>
+</body>
+</html>

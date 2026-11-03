@@ -73,6 +73,7 @@ class Answer(BaseModel):
     latency_ms: float = 0.0
     context_count: int = 0
     retrieval: str | None = None  # modo de búsqueda: "vector", "hybrid", "hybrid+cross-encoder"…
+    cached: bool = False  # servida desde la caché semántica (Fase 6)
 
 
 class IngestResult(BaseModel):
