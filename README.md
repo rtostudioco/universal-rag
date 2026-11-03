@@ -27,6 +27,9 @@ Hermano de [Universal MCP](https://github.com/rtostudioco/universal-mcp): misma 
 | 🖥️ **Streaming SSE (Fase 6)** | `POST /query/stream` emite eventos `meta` (fuentes) → `token`* → `done` (Answer con citas): primera palabra en milisegundos, con o sin LLM. También en CLI: `universal-rag query "…" --stream`. |
 | ⚡ **Caché semántica (Fase 6)** | Preguntas repetidas o parafraseadas se sirven de caché por similitud coseno (LRU + TTL opcional), sin repetir recuperación ni LLM. Se invalida sola al cambiar el índice y responde `cached: true`. |
 | 🧰 **Workbench web (Fase 6)** | Consola completa en `/`: chat en streaming, gestión de documentos (listar/eliminar), ingesta desde el navegador (texto o fuente) y panel de estado (colecciones, caché, métricas, conectores). Sin CDNs. |
+| 🏢 **Conectores empresariales (Fase 7)** | **Confluence** (espacios, páginas y búsquedas CQL; Basic/Bearer) y **SharePoint** (Microsoft Graph, client credentials, librerías de documentos con extracción PDF/DOCX/TXT/MD/CSV). |
+| 💬 **Memoria conversacional (Fase 7)** | Preguntas de seguimiento con `conversation_id`: el historial (LRU por turnos y conversaciones) se inyecta en el LLM como mensajes de chat; disponible en API, CLI (`chat` multi-turno) y `query --conversation`. Las consultas conversacionales omiten la caché semántica. |
+| ⏱️ **Sincronización programada (Fase 7)** | Registra fuentes con un intervalo (`POST /sync` o `sync add`) y el planificador las re-ingesta solo (la ingesta incremental hace que no cambiar nada sea gratis). Estado persistente opcional a JSON compartido CLI/API. |
 | 🗨️ **Mini chat UI (Fase 3)** | Chat web minimalista (ahora en `/chat`), autocontenido y sin CDNs, con citas y minutos visibles. |
 | 📚 **Colecciones múltiples (Fase 4)** | Bases de conocimiento aisladas (`legal`, `faq`, `energy`…) sobre un mismo despliegue: ingesta/consulta por colección en API, CLI y MCP. |
 | 🔄 **Jobs asíncronos (Fase 4)** | `POST /ingest/async` + polling en `GET /jobs/{id}` — ingesta de fuentes lentas (audio, video, lotes) sin bloquear al cliente. |
@@ -69,8 +72,33 @@ universal-rag ingest "notion://<page-id>"          # → página de Notion (requ
 universal-rag ingest "notion://database/<db-id>"   # → cada fila = un documento
 universal-rag ingest "notion://search/manual faq"  # → primer resultado de la búsqueda
 
+# Fase 7: Confluence y SharePoint (empresariales)
+universal-rag ingest "confluence://space/DEV"      # → todas las páginas del espacio
+universal-rag ingest "confluence://page/12345"     # → una página concreta
+universal-rag ingest "confluence://cql/text ~ \"seguridad\""  # → búsqueda CQL
+universal-rag ingest "https://acme.atlassian.net/wiki/spaces/DEV"  # → URL directa
+universal-rag ingest "sharepoint://contoso.sharepoint.com/sites/Marketing"
+universal-rag ingest "https://contoso.sharepoint.com/sites/Marketing" -o folder=/General/2024
+
 # Consulta con citas (en media, con minuto exacto)
 universal-rag query "¿cada cuánto se limpian los paneles?"
+
+# Fase 7: memoria conversacional multi-turno
+universal-rag query "¿qué es RAG?" --conversation demo
+universal-rag query "¿y cómo se compara con LangChain?" --conversation demo  # recuerda el turno anterior
+universal-rag conversations                          # lista conversaciones vivas
+universal-rag conversations --show demo              # historial de una conversación
+universal-rag conversations --clear all              # borra todas
+
+# Chat interactivo multi-turno (memoria activada por defecto)
+universal-rag chat
+universal-rag chat --conversation demo               # reanuda la conversación 'demo'
+
+# Fase 7: sincronización programada
+universal-rag sync add "https://ejemplo.com/docs" --interval 600
+universal-rag sync list                              # estado de las fuentes
+universal-rag sync run <job-id>                      # ejecución inmediata
+universal-rag sync remove <job-id>
 
 # Colecciones (Fase 4): bases de conocimiento aisladas
 universal-rag ingest ./contratos/2025.pdf --collection legal
@@ -122,9 +150,25 @@ curl localhost:8100/stats -H 'X-API-Key: <tu-key>'
 # Fase 6 — streaming SSE (eventos: meta → token* → done)
 curl -N -X POST localhost:8100/query/stream -H 'Content-Type: application/json' \
      -d '{"question": "¿qué dijo sobre costos?"}'
+
+# Fase 7 — memoria conversacional multi-turno (mismo conversation_id = contexto compartido)
+curl -X POST localhost:8100/query -H 'Content-Type: application/json' \
+     -d '{"question": "¿qué es RAG?", "conversation_id": "sesion-web-1"}'
+curl -X POST localhost:8100/query -H 'Content-Type: application/json' \
+     -d '{"question": "¿y sus desventajas?", "conversation_id": "sesion-web-1"}'
+curl localhost:8100/conversations                     # conversaciones vivas
+curl localhost:8100/conversations/sesion-web-1        # historial (user/assistant)
+curl -X DELETE localhost:8100/conversations/sesion-web-1
+
+# Fase 7 — sincronización programada
+curl -X POST localhost:8100/sync -H 'Content-Type: application/json' \
+     -d '{"source": "https://ejemplo.com/docs", "interval": 600}'
+curl localhost:8100/sync                              # jobs + último estado
+curl -X POST localhost:8100/sync/<job_id>/run         # ejecución inmediata
+curl -X DELETE localhost:8100/sync/<job_id>
 ```
 
-Endpoints: `/` (workbench) · `/chat` · `/health` · `/stats` · `/ingest` · `/ingest/text` · `/ingest/async` · `/jobs` · `/jobs/{id}` · `/query` · `/query/stream` (SSE) · `/documents` · `/collections`.
+Endpoints: `/` (workbench) · `/chat` · `/health` · `/stats` · `/ingest` · `/ingest/text` · `/ingest/async` · `/jobs` · `/jobs/{id}` · `/query` · `/query/stream` (SSE) · `/conversations` · `/sync` · `/documents` · `/collections`.
 
 ### Como servidor MCP (Claude Desktop, Universal MCP…)
 
@@ -174,6 +218,19 @@ manager.get("legal").ingest("./docs/contrato.pdf")
 manager.get("faq").ingest_text("¿Horario? De 9 a 17.", title="FAQ")
 manager.get("faq").query("¿cuál es el horario?")
 print(manager.list_collections())   # resumen por colección
+
+# Fase 7: memoria conversacional multi-turno
+rag.query("¿qué es RAG?", conversation_id="demo")
+answer = rag.query("¿y cómo se compara con LangChain?", conversation_id="demo")  # recuerda el turno previo
+print(rag.memory.conversations())   # [{"id": "demo", "turns": 2, …}]
+print(rag.memory.history("demo"))   # mensajes user/assistant para inspección
+
+# Fase 7: sincronización programada
+from universal_rag.core.sync import SyncScheduler
+
+scheduler = SyncScheduler(rag, tick=5.0, state_path="data/sync_state.json")
+scheduler.register("https://ejemplo.com/docs", interval=600)
+scheduler.start()                    # hilo de fondo; con la API: RAG_SYNC_ENABLED=1
 ```
 
 ## ⚙️ Configuración (variables `RAG_*`)
@@ -208,6 +265,17 @@ print(manager.list_collections())   # resumen por colección
 | `RAG_CACHE_THRESHOLD` | `0.93` | Similitud coseno mínima para servir de caché (Fase 6) |
 | `RAG_CACHE_MAX_ENTRIES` | `512` | Entradas máximas (LRU) de la caché (Fase 6) |
 | `RAG_CACHE_TTL` | *(vacío = sin TTL)* | Segundos de vida de cada entrada de caché (Fase 6) |
+| `RAG_MEMORY_MAX_TURNS` | `8` | Turnos recordados por conversación (Fase 7) |
+| `RAG_MEMORY_MAX_CONVERSATIONS` | `200` | LRU de conversaciones vivas (Fase 7) |
+| `RAG_SYNC_ENABLED` | `0` | Arranca el planificador de sincronización con la API (Fase 7) |
+| `RAG_SYNC_TICK` | `5` | Granularidad del bucle del planificador, en segundos (Fase 7) |
+| `RAG_SYNC_STATE_PATH` | *(vacío = en memoria)* | JSON para persistir los jobs (CLI usa `./data/sync_state.json`; compártelo con la API) (Fase 7) |
+| `RAG_CONFLUENCE_URL` | — | Base URL de Confluence (`https://acme.atlassian.net`); las URLs https la deducen (Fase 7) |
+| `RAG_CONFLUENCE_EMAIL` | — | Email para Basic auth en Cloud; vacío = Bearer/PAT para Server (Fase 7) |
+| `RAG_CONFLUENCE_TOKEN` | — | Token de API (Cloud) o PAT (Server/DC) (Fase 7) |
+| `RAG_SHAREPOINT_TENANT` | — | Id o dominio del tenant Entra ID (`contoso.onmicrosoft.com`) (Fase 7) |
+| `RAG_SHAREPOINT_CLIENT_ID` | — | Id de cliente de la app (permiso de aplicación `Sites.Read.All`) (Fase 7) |
+| `RAG_SHAREPOINT_CLIENT_SECRET` | — | Secreto de la app (Fase 7) |
 
 Ejemplo con Ollama local:
 
@@ -222,13 +290,14 @@ export RAG_LLM_MODEL=llama3.1
 fuente ──▶ ConnectorRegistry (auto-descubrimiento + prioridad) ──▶ Document
               │ text/file/url (F1)      │ audio/video/youtube/drive (F2: ASR local)
               │                         │ s3/notion (F5)      │ segments (start, end, text)
+              │                         │ confluence/sharepoint (F7: APIs oficiales)
               │                         └ tablas DOCX/HTML/PDF → Markdown (F5)
                                         ▼
                                         Chunker ──▶ Chunks ──▶ Embedder ──▶ VectorStore (Chroma)
                                         (texto: párrafos)    (media: por minuto [mm:ss])
                                                                      │
         pregunta ──▶ Caché semántica (F6, coseno ≥ threshold) ──▶ hit: tokens desde caché
-          │ miss
+          │ miss           (F7: se omite si la consulta es conversacional)
           ▼
         Retriever ◀────────────────────────────────────┘
           │  │ vectorial (coseno)
@@ -236,8 +305,12 @@ fuente ──▶ ConnectorRegistry (auto-descubrimiento + prioridad) ──▶ D
           │ RetrievedChunks ──▶ Reranker (F3: cross-encoder · F5: LLM, opcionales)
                         ▼
                    Generator (OpenAI-compat / echo) ──▶ Answer + Citations [1][2]… [00:00–01:05]
+                        │  ▲ historial user/assistant por conversation_id (F7, LRU)
                         │  query():      Answer completo
                         └  stream_query(): meta → token* → done  (SSE, F6)
+
+        SyncScheduler (F7): re-ingesta periódica de fuentes registradas → pipeline.ingest()
+                             (hilo de fondo con RAG_SYNC_ENABLED=1; estado JSON opcional)
 ```
 
 Detalles en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Búsqueda híbrida y evaluación en [`docs/RETRIEVAL.md`](docs/RETRIEVAL.md) · Cómo agregar conectores en [`docs/ADDING_CONNECTORS.md`](docs/ADDING_CONNECTORS.md).
@@ -250,7 +323,8 @@ Detalles en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Búsqueda híbrida
 - **Fase 4 (✅ v0.4.0)** — **producción y escalado**: colecciones múltiples, jobs asíncronos con polling, auth por API key, métricas runtime, ingesta incremental (skip sin cambios) y despliegue Docker.
 - **Fase 5 (✅ v0.5.0)** — **ecosistema de fuentes y calidad**: conector **S3/MinIO** (objetos y prefijos), conector **Notion** (páginas, bases de datos y búsqueda vía API oficial), **reranking con LLM** (`RAG_RERANKER=llm`, degradación elegante) y **extracción de tablas** a Markdown en DOCX/HTML/PDF.
 - **Fase 6 (✅ v0.6.0)** — **experiencia en tiempo real**: **streaming SSE** (`/query/stream` + `--stream` en CLI, con o sin LLM), **caché semántica** (coseno + LRU + TTL, invalidación automática) y **workbench web** completo (chat streaming, gestión de documentos, ingesta desde el navegador y panel de estado).
-- **Fase 7 (futuro)** — conectores empresariales (Confluence, SharePoint), memoria conversacional multi-turno y sincronización programada de fuentes.
+- **Fase 7 (✅ v0.7.0)** — **empresarial y conversacional**: conectores **Confluence** (espacios/páginas/CQL, Basic/Bearer) y **SharePoint** (Microsoft Graph client credentials), **memoria conversacional multi-turno** (`conversation_id` en API/CLI/Python, LRU, caché consciente) y **sincronización programada** (`/sync` + `sync` en CLI, planificador de fondo con estado persistente).
+- **Fase 8 (futuro)** — GraphRAG ligero (entidades y relaciones), ingestores de imágenes (OCR) y SDK de cliente Python (reintentos + streaming).
 
 > 💡 **Calidad del ASR**: el modelo `base` es rápido y ligero; para español u otros idiomas no ingleses recomendamos `RAG_ASR_MODEL=small` (o `medium`) — la precisión mejora notablemente. Audio con música de fondo o voces sintéticas degrada la precisión de cualquier Whisper.
 

@@ -12,6 +12,14 @@ Endpoints:
     GET    /jobs/{id}               estado de un job
     POST   /query                   pregunta con respuesta + citas
     POST   /query/stream            pregunta con respuesta en streaming (SSE)
+    GET    /conversations           conversaciones vivas (Fase 7)
+    GET    /conversations/{id}      historial de una conversación
+    DELETE /conversations/{id}      borra una conversación
+    DELETE /conversations           borra todas las conversaciones
+    GET    /sync                    jobs de sincronización programada (Fase 7)
+    POST   /sync                    registra una fuente con intervalo
+    DELETE /sync/{id}               elimina un job de sincronización
+    POST   /sync/{id}/run           fuerza una ejecución inmediata
     GET    /documents               lista de documentos ingestado
     DELETE /documents/{id}          elimina un documento y sus fragmentos
     GET    /collections             colecciones activas
@@ -20,6 +28,8 @@ Endpoints:
 Fase 4: colecciones múltiples (parámetro ``collection``), jobs asíncronos,
 autenticación opcional por API key (``RAG_API_KEY``) y métricas runtime.
 Fase 6: streaming SSE (``/query/stream``), caché semántica y workbench web.
+Fase 7: memoria conversacional multi-turno (``conversation_id``) y
+sincronización programada de fuentes (``/sync``).
 
 Uso::
 
@@ -45,6 +55,7 @@ from universal_rag.core.config import Settings
 from universal_rag.core.jobs import JobInfo, JobManager, JobStatus
 from universal_rag.core.metrics import Metrics
 from universal_rag.core.pipeline import RAGPipeline
+from universal_rag.core.sync import SyncScheduler
 from universal_rag.core.utils import get_logger
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -72,6 +83,18 @@ class QueryRequest(BaseModel):
     k: int | None = Field(None, ge=1, le=50, description="Fragmentos a recuperar (default: RAG_TOP_K)")
     where: dict[str, Any] | None = Field(None, description="Filtro de metadatos (ej. {\"source\": \"file\"})")
     collection: str | None = Field(None, description="Colección donde consultar (default si se omite)")
+    conversation_id: str | None = Field(
+        None,
+        max_length=128,
+        description="ID de conversación multi-turno (Fase 7): inyecta el historial y registra el turno",
+    )
+
+
+class SyncRequest(BaseModel):
+    source: str = Field(..., min_length=1, description="Fuente a re-ingestar (resuelta por conector)")
+    interval: float = Field(300, ge=1, description="Segundos entre re-ingestas")
+    connector: str | None = Field(None, description="Conector fijo (opcional; auto si se omite)")
+    options: dict[str, Any] = Field(default_factory=dict, description="Opciones del conector")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -93,13 +116,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         workers=settings.jobs_workers, max_history=settings.jobs_max_history
     )
     app.state.metrics = Metrics()
+    app.state.sync = SyncScheduler(
+        lambda: app.state.collections.get(),  # fábrica perezosa: no instancia la colección default
+        tick=settings.sync_tick,
+        state_path=settings.sync_state_path,
+    )
 
     auth = create_auth_dependency(settings)
     protected = APIRouter(dependencies=[Depends(auth)])
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        if settings.sync_enabled:
+            app.state.sync.start()
         yield
+        app.state.sync.stop()
         app.state.jobs.shutdown(wait=False)
 
     app.router.lifespan_context = lifespan
@@ -131,9 +162,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------------ stats
     @protected.get("/stats", tags=["system"], summary="Estadísticas y métricas")
     def stats() -> dict[str, Any]:
-        data: dict[str, Any] = app.state.collections.get().stats()
+        pipeline = app.state.collections.get()
+        data: dict[str, Any] = pipeline.stats()
         data["collections"] = app.state.collections.list_collections()
         data["runtime"] = app.state.metrics.snapshot()
+        data["sync"] = app.state.sync.stats()
         return data
 
     # ----------------------------------------------------------------- ingest
@@ -199,7 +232,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def query(request: QueryRequest) -> dict[str, Any]:
         app.state.metrics.inc("queries")
         answer = _pipeline(request.collection).query(
-            request.question, k=request.k, where=request.where
+            request.question,
+            k=request.k,
+            where=request.where,
+            conversation_id=request.conversation_id,
         )
         return answer.model_dump()
 
@@ -221,7 +257,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def event_source():
             try:
                 for event in pipeline.stream_query(
-                    request.question, k=request.k, where=request.where
+                    request.question,
+                    k=request.k,
+                    where=request.where,
+                    conversation_id=request.conversation_id,
                 ):
                     etype = event["type"]
                     if etype == "token":
@@ -273,6 +312,85 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Colección no encontrada: {name}")
         return {"deleted": name}
+
+    # ----------------------------------------------------------- conversations
+    def _memory() -> Any:
+        return app.state.collections.get().memory
+
+    @protected.get("/conversations", tags=["conversations"], summary="Conversaciones vivas")
+    def conversations() -> list[dict[str, Any]]:
+        return _memory().conversations()
+
+    @protected.get(
+        "/conversations/{conversation_id}",
+        tags=["conversations"],
+        summary="Historial de una conversación",
+    )
+    def conversation_history(conversation_id: str) -> dict[str, Any]:
+        memory = _memory()
+        if memory.turns(conversation_id) == 0:
+            raise HTTPException(status_code=404, detail=f"Conversación no encontrada: {conversation_id}")
+        return {
+            "id": conversation_id,
+            "turns": memory.turns(conversation_id),
+            "messages": memory.history(conversation_id),
+        }
+
+    @protected.delete(
+        "/conversations/{conversation_id}",
+        tags=["conversations"],
+        summary="Borra una conversación",
+    )
+    def delete_conversation(conversation_id: str) -> dict[str, Any]:
+        cleared = _memory().clear(conversation_id)
+        if not cleared:
+            raise HTTPException(status_code=404, detail=f"Conversación no encontrada: {conversation_id}")
+        return {"cleared": conversation_id}
+
+    @protected.delete("/conversations", tags=["conversations"], summary="Borra todas las conversaciones")
+    def delete_conversations() -> dict[str, Any]:
+        return {"cleared": _memory().clear()}
+
+    # -------------------------------------------------------------------- sync
+    @protected.get("/sync", tags=["sync"], summary="Jobs de sincronización programada")
+    def sync_list() -> dict[str, Any]:
+        scheduler: SyncScheduler = app.state.sync
+        return {
+            "enabled": settings.sync_enabled,
+            **scheduler.stats(),
+            "jobs": [job.model_dump(mode="json") for job in scheduler.list()],
+        }
+
+    @protected.post("/sync", tags=["sync"], summary="Registra una fuente con intervalo")
+    def sync_register(request: SyncRequest) -> dict[str, Any]:
+        app.state.metrics.inc("sync_registered")
+        try:
+            job = app.state.sync.register(
+                request.source,
+                request.interval,
+                connector=request.connector,
+                options=request.options,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return job.model_dump(mode="json")
+
+    @protected.delete("/sync/{job_id}", tags=["sync"], summary="Elimina un job de sincronización")
+    def sync_remove(job_id: str) -> dict[str, Any]:
+        if not app.state.sync.remove(job_id):
+            raise HTTPException(status_code=404, detail=f"Job de sincronización no encontrado: {job_id}")
+        return {"deleted": job_id}
+
+    @protected.post(
+        "/sync/{job_id}/run", tags=["sync"], summary="Fuerza una ejecución inmediata"
+    )
+    def sync_run(job_id: str) -> dict[str, Any]:
+        try:
+            outcome = app.state.sync.run_now(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        app.state.metrics.inc("sync_runs")
+        return outcome
 
     app.include_router(protected)
     return app

@@ -28,6 +28,14 @@ Fase 6 (streaming, caché y workbench)::
     RAG_CACHE_THRESHOLD=0.93             # similitud coseno mínima para acertar
     RAG_CACHE_MAX_ENTRIES=512            # LRU máximo en memoria
     RAG_CACHE_TTL=                       # segundos de vida (vacío = sin TTL)
+
+Fase 7 (memoria conversacional y sincronización)::
+
+    RAG_MEMORY_MAX_TURNS=8               # turnos recordados por conversación
+    RAG_MEMORY_MAX_CONVERSATIONS=200     # LRU de conversaciones vivas
+    RAG_SYNC_ENABLED=0                   # arranca el planificador de sincronización
+    RAG_SYNC_TICK=5                      # granularidad del bucle (segundos)
+    RAG_SYNC_STATE_PATH=                 # ruta JSON opcional para persistir jobs
 """
 
 from __future__ import annotations
@@ -106,6 +114,15 @@ class Settings(BaseSettings):
     cache_threshold: float = Field(default=0.93, ge=0.50, le=1.0)  # coseno mínimo
     cache_max_entries: int = Field(default=512, ge=10)  # LRU máximo
     cache_ttl: float | None = Field(default=None, ge=0)  # segundos; None = sin expiración
+
+    # --- Fase 7: memoria conversacional -------------------------------------
+    memory_max_turns: int = Field(default=8, ge=1, le=100)  # turnos por conversación
+    memory_max_conversations: int = Field(default=200, ge=1)  # LRU de conversaciones
+
+    # --- Fase 7: sincronización programada ----------------------------------
+    sync_enabled: bool = False  # arranca el planificador con la API
+    sync_tick: float = Field(default=5.0, ge=0.5)  # granularidad del bucle (s)
+    sync_state_path: Path | None = None  # JSON opcional para persistir los jobs
 
     # --- Conectores externos ---------------------------------------------
     # Directorios con conectores externos: <dir>/<nombre>/connector.py

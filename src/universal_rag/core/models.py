@@ -74,6 +74,7 @@ class Answer(BaseModel):
     context_count: int = 0
     retrieval: str | None = None  # modo de búsqueda: "vector", "hybrid", "hybrid+cross-encoder"…
     cached: bool = False  # servida desde la caché semántica (Fase 6)
+    conversation_id: str | None = None  # conversación multi-turno (Fase 7)
 
 
 class IngestResult(BaseModel):

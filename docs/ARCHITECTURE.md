@@ -167,6 +167,34 @@ Las tres comparten el mismo `RAGPipeline` (o un `CollectionManager`); no hay ló
 | Caché semántica | `core/cache.py` (`SemanticCache`) | Respuestas indexadas por embedding de la pregunta; acierto si coseno ≥ `RAG_CACHE_THRESHOLD` (0.93). LRU (`RAG_CACHE_MAX_ENTRIES`) + TTL opcional (`RAG_CACHE_TTL`), thread-safe, por colección. Se invalida al ingestar/borrar/vaciar. Solo aplica con parámetros por defecto (`k`/`where` la evitan). Métricas en `stats()["cache"]`. |
 | Workbench | `api/static/workbench.html` | SPA autocontenida en `/` (sin CDNs): Chat en streaming (fetch + ReadableStream), Documentos (listar/eliminar), Ingesta (texto/fuente) y Estado (stats, caché, colecciones, conectores, runtime). El mini chat F3 queda en `/chat`. |
 
+## 8d. Conversaciones y sincronización (Fase 7)
+
+**Memoria conversacional (`core/memory.py`)** — `ConversationMemory` guarda turnos
+(pregunta + respuesta) por `conversation_id` con doble LRU (`max_turns` por
+conversación, `max_conversations` en total) y lock de hilo. El pipeline inyecta
+el historial en el generador como mensajes `user`/`assistant` (solo cuando
+existe, preservando la firma clásica de generadores de terceros) y registra el
+turno tras responder. Las consultas conversacionales **omiten la caché
+semántica** (la respuesta depende del historial). Cada colección tiene su
+propia memoria; la API expone `/conversations`.
+
+**Sincronización programada (`core/sync.py`)** — `SyncScheduler` registra
+fuentes con `interval` (ID estable por fuente+conector: re-registrar actualiza
+sin duplicar) y las re-ingesta cuando vencen. `pipeline` puede ser un objeto o
+una fábrica `() -> RAGPipeline` (la API pasa una fábrica perezosa para no
+instanciar la colección default). Hilo de fondo opt-in (`RAG_SYNC_ENABLED=1`)
+con granularidad `RAG_SYNC_TICK`; persistencia opcional a JSON
+(`RAG_SYNC_STATE_PATH`) compartible entre CLI y API. La ingesta incremental
+(Fase 4) hace baratas las re-ingestas sin cambios.
+
+**Conectores empresariales** — `confluence` (REST v1: espacios por
+`spaceKey`, páginas por ID y búsquedas CQL; Basic `email:token` en Cloud o
+Bearer PAT en Server; el formato de almacenamiento XHTML se convierte a texto
+con encabezados, listas, tablas y macros de código) y `sharepoint` (Microsoft
+Graph con client credentials en Entra ID: sitio → librería → listado paginado
+→ descarga → extracción reutilizando las rutinas del conector `file`).
+Ambos con `priority=10` para ganarle al conector `url` en sus dominios.
+
 ## 9. Aislamiento de fallos
 
 | Nivel | Garantía |

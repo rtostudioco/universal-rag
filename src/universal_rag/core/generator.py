@@ -57,30 +57,52 @@ class BaseGenerator(ABC):
     name: ClassVar[str] = "base"
 
     @abstractmethod
-    def generate(self, question: str, contexts: list[RetrievedChunk]) -> tuple[str, str]:
-        """Devuelve (texto_respuesta, nombre_modelo)."""
+    def generate(
+        self,
+        question: str,
+        contexts: list[RetrievedChunk],
+        history: list[dict[str, str]] | None = None,
+    ) -> tuple[str, str]:
+        """Devuelve (texto_respuesta, nombre_modelo).
+
+        ``history`` — mensajes previos de la conversación (Fase 7):
+        ``[{"role": "user"|"assistant", "content": …}, …]``. Opcional.
+        """
 
     @property
     def model_label(self) -> str:
         """Nombre del modelo para mostrar (default: nombre del generador)."""
         return self.name
 
-    def stream_generate(self, question: str, contexts: list[RetrievedChunk]) -> Iterator[str]:
+    def stream_generate(
+        self,
+        question: str,
+        contexts: list[RetrievedChunk],
+        history: list[dict[str, str]] | None = None,
+    ) -> Iterator[str]:
         """Streaming por defecto: genera todo y lo emite en trozos pequeños.
 
         Los generadores con streaming real (SSE del LLM) lo sobreescriben.
         """
-        text, _ = self.generate(question, contexts)
+        text, _ = self.generate(question, contexts, history=history)
         yield from tokenize_stream(text)
 
 
 # ------------------------------------------------------------------------- echo
 class EchoGenerator(BaseGenerator):
-    """Extractivo: sintetiza el contexto sin LLM (offline / tests)."""
+    """Extractivo: sintetiza el contexto sin LLM (offline / tests).
+
+    Ignora el historial conversacional (no hay LLM al que inyectárselo).
+    """
 
     name = "echo"
 
-    def generate(self, question: str, contexts: list[RetrievedChunk]) -> tuple[str, str]:
+    def generate(
+        self,
+        question: str,
+        contexts: list[RetrievedChunk],
+        history: list[dict[str, str]] | None = None,
+    ) -> tuple[str, str]:
         lines = [f"Resumen extractivo para: «{question.strip()}»", ""]
         for i, retrieved in enumerate(contexts, start=1):
             title = retrieved.chunk.metadata.get("title") or "(sin título)"
@@ -90,8 +112,13 @@ class EchoGenerator(BaseGenerator):
         lines.append("(Modo extractivo: no hay LLM configurado; se muestran los fragmentos recuperados.)")
         return "\n".join(lines).strip(), self.name
 
-    def stream_generate(self, question: str, contexts: list[RetrievedChunk]) -> Iterator[str]:
-        text, _ = self.generate(question, contexts)
+    def stream_generate(
+        self,
+        question: str,
+        contexts: list[RetrievedChunk],
+        history: list[dict[str, str]] | None = None,
+    ) -> Iterator[str]:
+        text, _ = self.generate(question, contexts, history=history)
         yield from tokenize_stream(text)
 
 
@@ -124,9 +151,14 @@ class OpenAICompatGenerator(BaseGenerator):
         return self.model
 
     # ------------------------------------------------------------------ API
-    def generate(self, question: str, contexts: list[RetrievedChunk]) -> tuple[str, str]:
+    def generate(
+        self,
+        question: str,
+        contexts: list[RetrievedChunk],
+        history: list[dict[str, str]] | None = None,
+    ) -> tuple[str, str]:
         try:
-            response = self._post(self._payload(question, contexts), self._headers())
+            response = self._post(self._payload(question, contexts, history), self._headers())
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPError as exc:
@@ -137,9 +169,14 @@ class OpenAICompatGenerator(BaseGenerator):
             raise GeneratorError(f"Respuesta del LLM con formato inesperado: {data!r}") from exc
         return text.strip(), self.model
 
-    def stream_generate(self, question: str, contexts: list[RetrievedChunk]) -> Iterator[str]:
+    def stream_generate(
+        self,
+        question: str,
+        contexts: list[RetrievedChunk],
+        history: list[dict[str, str]] | None = None,
+    ) -> Iterator[str]:
         """Streaming real vía SSE del endpoint (/chat/completions stream=true)."""
-        payload = self._payload(question, contexts)
+        payload = self._payload(question, contexts, history)
         payload["stream"] = True
         pieces: list[str] = []
         try:
@@ -163,15 +200,36 @@ class OpenAICompatGenerator(BaseGenerator):
             yield text
 
     # ------------------------------------------------------------- internals
-    def _payload(self, question: str, contexts: list[RetrievedChunk]) -> dict:
+    def _payload(
+        self,
+        question: str,
+        contexts: list[RetrievedChunk],
+        history: list[dict[str, str]] | None = None,
+    ) -> dict:
+        messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT_ES}]
+        # Memoria conversacional (Fase 7): turnos previos entre system y user.
+        messages.extend(self._history_messages(history))
+        messages.append({"role": "user", "content": self._user_prompt(question, contexts)})
         return {
             "model": self.model,
             "temperature": self.temperature,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT_ES},
-                {"role": "user", "content": self._user_prompt(question, contexts)},
-            ],
+            "messages": messages,
         }
+
+    @staticmethod
+    def _history_messages(history: list[dict[str, str]] | None, limit: int = 16) -> list[dict[str, str]]:
+        """Sanitiza el historial: roles válidos, strings, últimos ``limit`` mensajes."""
+        if not history:
+            return []
+        clean: list[dict[str, str]] = []
+        for message in history:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            content = message.get("content")
+            if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+                clean.append({"role": role, "content": content})
+        return clean[-limit:]
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}

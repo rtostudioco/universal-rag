@@ -19,6 +19,7 @@ from universal_rag.core.connectors import (
 )
 from universal_rag.core.embeddings import BaseEmbedder, create_embedder
 from universal_rag.core.generator import BaseGenerator, create_generator, tokenize_stream
+from universal_rag.core.memory import ConversationMemory
 from universal_rag.core.models import (
     Answer,
     Citation,
@@ -62,6 +63,9 @@ class RAGPipeline:
         self.embedder = embedder or create_embedder(self.settings)
         self.store = store or create_store(self.settings)
         self.generator = generator or create_generator(self.settings)
+        self.memory = ConversationMemory(
+            self.settings.memory_max_turns, self.settings.memory_max_conversations
+        )
         self.cache: SemanticCache | None = None
         if self.settings.cache_enabled:
             self.cache = SemanticCache(
@@ -179,35 +183,60 @@ class RAGPipeline:
             retrieval=self.retrieval_label(),
         )
 
-    def query(self, question: str, k: int | None = None, where: dict[str, Any] | None = None) -> Answer:
-        """Responde una pregunta con citas verificables a las fuentes."""
+    def query(
+        self,
+        question: str,
+        k: int | None = None,
+        where: dict[str, Any] | None = None,
+        conversation_id: str | None = None,
+    ) -> Answer:
+        """Responde una pregunta con citas verificables a las fuentes.
+
+        Con ``conversation_id`` (Fase 7) el historial previo se inyecta en el
+        generador como mensajes de chat y el turno queda recordado en memoria;
+        estas consultas omiten la caché semántica (dependen del contexto).
+        """
         started = time.perf_counter()
-        # Caché semántica (Fase 6): solo con parámetros por defecto (k/where cambian el resultado).
-        if k is None and where is None:
+        history = self.memory.history(conversation_id) if conversation_id else None
+        # Caché semántica (Fase 6): solo con parámetros por defecto y sin conversación
+        # (la respuesta multi-turno depende del historial, no solo de la pregunta).
+        use_cache = k is None and where is None and not conversation_id
+        if use_cache:
             cached = self._cache_get(question, started)
             if cached is not None:
                 return cached
         contexts = self.retriever.retrieve(question, k=k, where=where)
         if not contexts:
             answer = self._empty_answer(question, started)
+        else:
+            # Solo pasamos history=… cuando existe: los generadores custom de terceros
+            # con la firma clásica (question, contexts) siguen funcionando.
+            if history:
+                text, model_name = self.generator.generate(question, contexts, history=history)
+            else:
+                text, model_name = self.generator.generate(question, contexts)
+            answer = Answer(
+                question=question,
+                answer=text,
+                citations=self._build_citations(text, contexts),
+                model=model_name,
+                latency_ms=round((time.perf_counter() - started) * 1000, 2),
+                context_count=len(contexts),
+                retrieval=self.retrieval_label(),
+            )
+        answer.conversation_id = conversation_id or None
+        if conversation_id:
+            self.memory.append(conversation_id, question, answer.answer)
+        if use_cache:
             self._cache_put(question, answer)
-            return answer
-        text, model_name = self.generator.generate(question, contexts)
-        citations = self._build_citations(text, contexts)
-        answer = Answer(
-            question=question,
-            answer=text,
-            citations=citations,
-            model=model_name,
-            latency_ms=round((time.perf_counter() - started) * 1000, 2),
-            context_count=len(contexts),
-            retrieval=self.retrieval_label(),
-        )
-        self._cache_put(question, answer)
         return answer
 
     def stream_query(
-        self, question: str, k: int | None = None, where: dict[str, Any] | None = None
+        self,
+        question: str,
+        k: int | None = None,
+        where: dict[str, Any] | None = None,
+        conversation_id: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Versión en streaming de ``query()`` (Fase 6).
 
@@ -219,10 +248,13 @@ class RAGPipeline:
             {"type": "done",  "answer": {…Answer…}} # 1 vez, con citas
 
         Con acierto de caché semántica los tokens se re-emiten desde la
-        respuesta guardada (``meta.cached=true``).
+        respuesta guardada (``meta.cached=true``). Con ``conversation_id``
+        (Fase 7) se inyecta el historial y se registra el turno; la caché
+        se omite para consultas conversacionales.
         """
         started = time.perf_counter()
-        use_cache = k is None and where is None
+        history = self.memory.history(conversation_id) if conversation_id else None
+        use_cache = k is None and where is None and not conversation_id
         if use_cache and self.cache is not None:
             payload = self.cache.lookup(question)
             if payload is not None:
@@ -240,7 +272,7 @@ class RAGPipeline:
                 yield {"type": "done", "answer": answer.model_dump()}
                 return
         contexts = self.retriever.retrieve(question, k=k, where=where)
-        yield {
+        meta = {
             "type": "meta",
             "cached": False,
             "model": self.generator.model_label,
@@ -248,11 +280,23 @@ class RAGPipeline:
             "context_count": len(contexts),
             "sources": [_source_preview(rc) for rc in contexts],
         }
+        if conversation_id:
+            meta["conversation_id"] = conversation_id
+        yield meta
         if not contexts:
-            yield {"type": "done", "answer": self._empty_answer(question, started).model_dump()}
+            answer = self._empty_answer(question, started)
+            answer.conversation_id = conversation_id or None
+            if conversation_id:
+                self.memory.append(conversation_id, question, answer.answer)
+            yield {"type": "done", "answer": answer.model_dump()}
             return
         parts: list[str] = []
-        for piece in self.generator.stream_generate(question, contexts):
+        tokens = (
+            self.generator.stream_generate(question, contexts, history=history)
+            if history
+            else self.generator.stream_generate(question, contexts)
+        )
+        for piece in tokens:
             parts.append(piece)
             yield {"type": "token", "value": piece}
         text = "".join(parts)
@@ -264,7 +308,10 @@ class RAGPipeline:
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
             context_count=len(contexts),
             retrieval=self.retrieval_label(),
+            conversation_id=conversation_id or None,
         )
+        if conversation_id:
+            self.memory.append(conversation_id, question, answer.answer)
         if use_cache:
             self._cache_put(question, answer)
         yield {"type": "done", "answer": answer.model_dump()}
@@ -329,6 +376,7 @@ class RAGPipeline:
             "documents": len(documents),
             "chunks": self.store.count_chunks(),
             "cache": self.cache.stats() if self.cache else {"enabled": False},
+            "memory": self.memory.stats(),
             "connectors": self.registry.names(),
             "connector_report": [
                 {"origin": r.origin, "ok": r.ok, "error": r.error, "name": r.connector.name if r.connector else None}

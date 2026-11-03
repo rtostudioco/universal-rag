@@ -4,7 +4,9 @@ Comandos:
     ingest SOURCE    ingesta un archivo/URL/patrón
     text TEXT        ingesta texto directo
     query QUESTION   pregunta con respuesta y citas (--stream para streaming)
-    chat             chat interactivo en la terminal
+    chat             chat interactivo multi-turno en la terminal (Fase 7)
+    sync             sincronización programada de fuentes (add/list/run/remove)
+    conversations    conversaciones vivas y su historial (Fase 7)
     eval GOLDEN      evalúa la recuperación con un golden set (JSONL)
     collections      lista las colecciones (bases aisladas)
     stats            estadísticas
@@ -18,11 +20,14 @@ Fase 4: todos los comandos de contenido aceptan ``--collection`` para operar
 sobre bases de conocimiento aisladas.
 Fase 6: ``query --stream`` imprime la respuesta token a token y ``serve``
 expone el workbench web completo (chat streaming, documentos, ingesta, estado).
+Fase 7: memoria conversacional (``query --conversation``, ``chat`` multi-turno
+y ``conversations``) y sincronización programada (``sync add/list/run/remove``).
 """
 
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import typer
@@ -34,6 +39,7 @@ from universal_rag import __version__
 from universal_rag.core.collections import CollectionManager
 from universal_rag.core.config import Settings
 from universal_rag.core.pipeline import RAGPipeline
+from universal_rag.core.utils import short_hash
 
 app = typer.Typer(
     name="universal-rag",
@@ -51,6 +57,20 @@ def _settings() -> Settings:
 
 def _pipeline(collection: str | None = None) -> RAGPipeline:
     return CollectionManager(_settings()).get(collection)
+
+
+def _sync_scheduler():  # noqa: ANN201
+    """Scheduler de sincronización del CLI con estado persistente compartido.
+
+    Usa ``RAG_SYNC_STATE_PATH`` (o ``./data/sync_state.json``) para que los
+    registros del CLI sobrevivan entre invocaciones y coincidan con los de la
+    API cuando ambas apuntan al mismo fichero.
+    """
+    from universal_rag.core.sync import SyncScheduler
+
+    settings = _settings()
+    state = settings.sync_state_path or Path("./data/sync_state.json")
+    return SyncScheduler(_pipeline(), tick=settings.sync_tick, state_path=state)
 
 
 def _print_ingest(result) -> None:  # noqa: ANN001
@@ -74,10 +94,17 @@ def ingest(
     connector: str | None = typer.Option(None, "--connector", "-c", help="Forzar conector concreto"),
     collection: str | None = typer.Option(None, "--collection", "-C", help="Colección destino"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingestar aunque no haya cambios"),
+    option: list[str] | None = typer.Option(
+        None, "--option", "-o", help="Opción del conector clave=valor (repetible, ej. -o folder=/General)"
+    ),
 ) -> None:
     """Ingesta un archivo, patrón o URL en la base de conocimiento."""
     pipeline = _pipeline(collection)
     options = {"title": title} if title else {}
+    for pair in option or []:
+        key, _, value = pair.partition("=")
+        if key.strip():
+            options[key.strip()] = value.strip()
     _print_ingest(pipeline.ingest(source, connector=connector, force=force, **options))
 
 
@@ -97,6 +124,9 @@ def query(
     question: str = typer.Argument(..., help="Pregunta en lenguaje natural"),
     k: int | None = typer.Option(None, "--k", "-k", min=1, max=50, help="Fragmentos a recuperar"),
     collection: str | None = typer.Option(None, "--collection", "-C", help="Colección donde consultar"),
+    conversation: str | None = typer.Option(
+        None, "--conversation", "-v", help="ID de conversación: activa la memoria multi-turno (Fase 7)"
+    ),
     stream: bool = typer.Option(
         False, "--stream", "-s", help="Imprime la respuesta en streaming (token a token)"
     ),
@@ -104,18 +134,18 @@ def query(
     """Responde una pregunta con citas a las fuentes."""
     pipeline = _pipeline(collection)
     if stream:
-        _query_stream(pipeline, question, k)
+        _query_stream(pipeline, question, k, conversation)
         return
-    answer = pipeline.query(question, k=k)
+    answer = pipeline.query(question, k=k, conversation_id=conversation)
     console.print(Panel(answer.answer, title=f"Respuesta · {answer.model} · {answer.latency_ms:.0f} ms"))
     _print_citations(answer)
 
 
-def _query_stream(pipeline: RAGPipeline, question: str, k: int | None) -> None:
+def _query_stream(pipeline: RAGPipeline, question: str, k: int | None, conversation: str | None = None) -> None:
     """Streaming token a token (Fase 6) + tabla de fuentes al terminar."""
     answer_payload: dict | None = None
     tokens = 0
-    for event in pipeline.stream_query(question, k=k):
+    for event in pipeline.stream_query(question, k=k, conversation_id=conversation):
         etype = event["type"]
         if etype == "token":
             print(event["value"], end="", flush=True)  # noqa: T201 — salida en vivo
@@ -164,9 +194,23 @@ def _print_citations(answer) -> None:  # noqa: ANN001
 def chat(
     k: int | None = typer.Option(None, "--k", "-k", min=1, max=50),
     collection: str | None = typer.Option(None, "--collection", "-C", help="Colección donde chatear"),
+    conversation: str | None = typer.Option(
+        None, "--conversation", "-v", help="Reanuda una conversación concreta (default: sesión nueva)"
+    ),
+    no_memory: bool = typer.Option(False, "--no-memory", help="Desactiva la memoria multi-turno"),
 ) -> None:
-    """Chat interactivo en la terminal ('salir' para terminar)."""
+    """Chat interactivo multi-turno en la terminal ('salir' para terminar).
+
+    Fase 7: por defecto cada sesión usa una conversación propia (memoria
+    activada); con ``--conversation ID`` reanudas una existente (p. ej. una
+    iniciada en el workbench web).
+    """
     pipeline = _pipeline(collection)
+    conversation_id = None if no_memory else (conversation or f"cli-{short_hash(str(time.time()))}")
+    if conversation_id:
+        turns = pipeline.memory.turns(conversation_id)
+        note = f"reanudando ({turns} turno(s))" if turns else "sesión nueva"
+        console.print(f"[cyan]Conversación[/cyan] {conversation_id} · {note}")
     console.print(
         f"[cyan]Universal RAG[/cyan] · búsqueda [bold]{pipeline.retrieval_label()}[/bold] · "
         "escribe [bold]salir[/bold] para terminar"
@@ -180,13 +224,119 @@ def chat(
             continue
         if question.lower() in {"salir", "exit", "quit", "q"}:
             break
-        answer = pipeline.query(question, k=k)
+        answer = pipeline.query(question, k=k, conversation_id=conversation_id)
         console.print(Panel(answer.answer, title=f"{answer.model} · {answer.latency_ms:.0f} ms"))
         for i, citation in enumerate(answer.citations, start=1):
             moment = f" {citation.timestamp}" if citation.timestamp else ""
             console.print(f"  [cyan][{i}][/] {citation.title or citation.source}{moment}")
             console.print(f"      [dim]{citation.quote}[/dim]")
     console.print("[dim]¡Hasta luego![/dim]")
+
+
+sync_app = typer.Typer(help="Sincronización programada de fuentes (Fase 7)", no_args_is_help=True)
+app.add_typer(sync_app, name="sync")
+
+
+@sync_app.command("add")
+def sync_add(
+    source: str = typer.Argument(..., help="Fuente a re-ingestar (resuelta por conector)"),
+    interval: float = typer.Option(300.0, "--interval", "-i", min=1.0, help="Segundos entre re-ingestas"),
+    connector: str | None = typer.Option(None, "--connector", "-c", help="Forzar conector concreto"),
+) -> None:
+    """Registra (o actualiza) la sincronización periódica de una fuente."""
+    job = _sync_scheduler().register(source, interval, connector=connector)
+    console.print(
+        f"[green]✓[/green] Sincronización [cyan]{job.id}[/cyan] · {job.source} cada {job.interval:.0f}s\n"
+        "[dim]Nota: el planificador corre dentro de la API (RAG_SYNC_ENABLED=1 + "
+        "RAG_SYNC_STATE_PATH compartido) o con ejecución manual (sync run).[/dim]"
+    )
+
+
+@sync_app.command("list")
+def sync_list() -> None:
+    """Lista las fuentes registradas y su último estado."""
+    jobs = _sync_scheduler().list()
+    if not jobs:
+        console.print("[yellow]Sin sincronizaciones registradas.[/yellow]")
+        return
+    table = Table(title="Sincronizaciones programadas")
+    table.add_column("ID", style="cyan")
+    table.add_column("Fuente", overflow="fold")
+    table.add_column("Intervalo", justify="right")
+    table.add_column("Estado", style="green")
+    table.add_column("Ejecuciones", justify="right")
+    for job in jobs:
+        table.add_row(
+            job.id,
+            job.source,
+            f"{job.interval:.0f}s",
+            job.last_status or "pendiente",
+            str(job.runs),
+        )
+    console.print(table)
+
+
+@sync_app.command("run")
+def sync_run(
+    job_id: str = typer.Argument(..., help="ID del job (sync list)")
+) -> None:
+    """Fuerza una ejecución inmediata de una sincronización."""
+    try:
+        outcome = _sync_scheduler().run_now(job_id)
+    except KeyError:
+        console.print(f"[red]✗ Job no encontrado:[/red] {job_id}")
+        raise typer.Exit(code=1) from None
+    job = outcome["job"]
+    result = outcome.get("result") or {}
+    status = job["last_status"]
+    color = "green" if status == "ok" else "red"
+    console.print(f"[{color}]{status}[/] · documentos: {result.get('documents', 0)} · error: {job['last_error'] or '—'}")
+
+
+@sync_app.command("remove")
+def sync_remove(
+    job_id: str = typer.Argument(..., help="ID del job (sync list)")
+) -> None:
+    """Elimina una sincronización registrada."""
+    if _sync_scheduler().remove(job_id):
+        console.print(f"[green]✓ Eliminada[/green] {job_id}")
+    else:
+        console.print(f"[red]✗ No encontrada:[/red] {job_id}")
+        raise typer.Exit(code=1)
+
+
+@app.command("conversations")
+def conversations(
+    show: str | None = typer.Option(None, "--show", "-S", help="Historial de una conversación concreta"),
+    clear: str | None = typer.Option(None, "--clear", help="Borra una conversación ('all' = todas)"),
+    collection: str | None = typer.Option(None, "--collection", "-C"),
+) -> None:
+    """Lista las conversaciones vivas (memoria multi-turno, Fase 7)."""
+    pipeline = _pipeline(collection)
+    if clear:
+        cleared = pipeline.memory.clear() if clear == "all" else pipeline.memory.clear(clear)
+        console.print(f"[green]✓ Conversaciones borradas:[/green] {cleared}")
+        return
+    if show:
+        messages = pipeline.memory.history(show)
+        if not messages:
+            console.print(f"[yellow]Sin turnos para:[/yellow] {show}")
+            return
+        for message in messages:
+            role = "[green]Tú[/green]" if message["role"] == "user" else "[cyan]RAG[/cyan]"
+            console.print(f"{role} ▸ {message['content']}")
+        return
+    rows = pipeline.memory.conversations()
+    if not rows:
+        console.print("[yellow]Sin conversaciones activas.[/yellow]")
+        return
+    table = Table(title=f"{len(rows)} conversación(es)")
+    table.add_column("ID", style="cyan")
+    table.add_column("Turnos", justify="right")
+    table.add_column("Último turno", style="magenta")
+    for row in rows:
+        table.add_row(row["id"], str(row["turns"]), row["last_at"] or "—")
+    console.print(table)
 
 
 @app.command("eval")
