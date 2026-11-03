@@ -20,7 +20,7 @@ autenticación opcional por API key (``RAG_API_KEY``) y métricas runtime.
 
 Uso::
 
-    uvicorn universal_rag.api.app:app --factory --port 8100
+    uvicorn universal_rag.api.app:app --port 8100
     # o: universal-rag serve --port 8100
 """
 
