@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "universal-rag"
+version = "0.1.0"
+description = "Universal RAG: pipeline de Retrieval-Augmented Generation plugable — conectores universales (texto, archivos, URLs, y más adelante audio/video/Drive), embeddings locales, ChromaDB y respuestas con citas."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Universal RAG Contributors" }]
+keywords = [
+    "rag",
+    "retrieval-augmented-generation",
+    "embeddings",
+    "chromadb",
+    "llm",
+    "ai",
+    "search",
+    "plugins",
+]
+dependencies = [
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "httpx>=0.27",
+    "typer>=0.12",
+    "rich>=13.0",
+    "chromadb>=0.5",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "trafilatura>=1.12",
+    "mcp>=1.9.0,<2.0",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+local = [
+    "sentence-transformers>=2.7",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+universal-rag = "universal_rag.__main__:main"
+
+[tool.hatchling.build.targets.wheel]
+packages = ["src/universal_rag"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["E501"]
