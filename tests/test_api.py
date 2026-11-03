@@ -14,9 +14,11 @@ def client(settings) -> TestClient:
 
 
 def test_health(client):
+    import universal_rag
+
     data = client.get("/health").json()
     assert data["status"] == "ok"
-    assert data["version"] == "0.1.0"
+    assert data["version"] == universal_rag.__version__
 
 
 def test_stats_vacio(client):

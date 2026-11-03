@@ -41,7 +41,15 @@ class Chunker:
         return self._pack(self._units(text))
 
     def chunk_document(self, document: Document) -> list[Chunk]:
-        """Divide un documento en :class:`Chunk` con IDs deterministas."""
+        """Divide un documento en :class:`Chunk` con IDs deterministas.
+
+        Si el documento trae segmentos de transcripción (audio/video — Fase 2),
+        usa el troceado temporal: los fragmentos se acotan por tiempo y las
+        citas pueden mostrar ``[mm:ss–mm:ss]``.
+        """
+        segments = document.metadata.get("segments")
+        if segments:
+            return self._chunk_transcript(document, segments)
         pieces = self.split(document.content)
         total = len(pieces)
         chunks: list[Chunk] = []
@@ -61,6 +69,67 @@ class Chunker:
                     },
                 )
             )
+        return chunks
+
+    # -------------------------------------------------- transcripciones (F2)
+    def _chunk_transcript(self, document: Document, segments: list[dict]) -> list[Chunk]:
+        """Agrupa segmentos con marca de tiempo en fragmentos acotados por tiempo.
+
+        Mantiene el presupuesto de caracteres (``size``) pero los límites caen
+        en fronteras de segmento; cada chunk lleva ``start_time``/``end_time``.
+        """
+        base_metadata = {k: v for k, v in document.metadata.items() if k != "segments"}
+        chunks: list[Chunk] = []
+        buffer: list[str] = []
+        buffer_len = 0
+        start_time: float | None = None
+        end_time: float | None = None
+
+        def flush() -> None:
+            nonlocal buffer, buffer_len, start_time, end_time
+            if buffer:
+                text = " ".join(buffer).strip()
+                chunks.append(
+                    Chunk(
+                        id=make_id("chunk", document.id, len(chunks), text),
+                        document_id=document.id,
+                        text=text,
+                        index=len(chunks),
+                        total=0,  # se rellena al final
+                        metadata={
+                            "source": document.source,
+                            "uri": document.uri,
+                            "title": document.title,
+                            **base_metadata,
+                            "start_time": start_time,
+                            "end_time": end_time,
+                        },
+                    )
+                )
+                buffer, buffer_len = [], 0
+                start_time, end_time = None, None
+
+        for raw in segments:
+            try:
+                seg_start = float(raw["start"])
+                seg_end = float(raw["end"])
+                seg_text = str(raw.get("text", "")).strip()
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not seg_text:
+                continue
+            if buffer and buffer_len + 1 + len(seg_text) > self.size:
+                flush()
+            if not buffer:
+                start_time = seg_start
+            buffer.append(seg_text)
+            buffer_len += (1 if buffer_len else 0) + len(seg_text)
+            end_time = seg_end
+        flush()
+
+        total = len(chunks)
+        for chunk in chunks:
+            chunk.total = total
         return chunks
 
     # ------------------------------------------------------------- internals

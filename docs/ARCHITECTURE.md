@@ -42,11 +42,26 @@ class BaseConnector(ABC):
     description: ClassVar[str]
     schemes: ClassVar[tuple[str, ...]]     # "http", "file", "drive", …
     extensions: ClassVar[tuple[str, ...]]  # ".pdf", ".mp3", …
+    priority: ClassVar[int] = 0            # mayor = se consulta antes en resolve()
 
     def can_handle(self, source: str) -> bool: ...
     @abstractmethod
     def fetch(self, source: str, **options) -> list[Document]: ...
 ```
+
+### Catálogo
+
+| Conector | Fase | Origen | Notas |
+|---|---|---|---|
+| `text` | 1 | texto inline (`text://`) | usado también por `pipeline.ingest_text()` |
+| `file` | 1 | PDF, DOCX, TXT, MD, CSV + globs | extracción con pypdf/python-docx |
+| `url` | 1 | páginas web | trafilatura sobre HTML limpiado + fallback bs4 |
+| `audio` | 2 | MP3/WAV/M4A/OGG/FLAC… | ASR local faster-whisper + minutos |
+| `video` | 2 | MP4/MKV/MOV/WEBM… | decodifica pista de audio (PyAV) + ASR |
+| `youtube` | 2 | URLs de YouTube | yt-dlp (solo audio) → ASR; `priority=20` |
+| `drive` | 2 | Google Drive público/compartido | gdown → ruta según formato; `priority=15` |
+
+La **prioridad** resuelve colisiones: para `https://youtube.com/watch…`, `youtube` (20) se evalúa antes que `url` (0); para enlaces de Drive, `drive` (15) antes que `url`.
 
 ### Auto-descubrimiento
 
@@ -61,11 +76,20 @@ El `id` del documento es `sha256("doc|" + uri)`: ingerir la misma URI **reemplaz
 
 ## 4. Chunker (core/chunker.py)
 
-Estrategia determinista:
+Estrategia determinista con **dos rutas**:
 
+**Documentos de texto** (Fase 1):
 1. Texto → párrafos; los párrafos > `size` se parten en frases; las frases enormes en palabras (nunca a mitad de palabra salvo palabras patológicas > size).
 2. Empaquetado greedy hasta `chunk_size`.
 3. Al abrir fragmento nuevo se antepone la **cola** del anterior (~`chunk_overlap` chars, cortada en límite de palabra) para conservar contexto entre fragmentos.
+
+**Transcripciones** (Fase 2 — audio/video): si el `Document` trae `metadata["segments"]` (`start`, `end`, `text`), se agrupan segmentos respetando el presupuesto de caracteres pero con cortes solo en fronteras de segmento; cada chunk lleva `start_time`/`end_time`. Las citas de esos chunks muestran `[mm:ss–mm:ss]` (citas por minuto).
+
+## 4b. Transcripciones locales (core/transcript.py, Fase 2)
+
+- `Transcriber` envuelve **faster-whisper** (CTranslate2, CPU int8 por defecto): modelo perezoso, configuración `RAG_ASR_MODEL/LANGUAGE/…` u opciones por ingesta (`asr_model`, `language`).
+- Decodificación robusta: intenta `decode_audio` de faster-whisper y, si la versión de PyAV instalada es incompatible, cae a un decodificador propio (PyAV → float32 mono 16 kHz) y le pasa el array a Whisper — mismo resultado, independiente del pin de PyAV.
+- Los segmentos viajan en `Document.metadata["segments"]`; `build_transcript_document()` (connectors/_media.py) es el helper común de audio/video/youtube/drive.
 
 ## 5. Embeddings (core/embeddings.py)
 

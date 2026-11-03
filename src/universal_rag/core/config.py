@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     # --- Búsqueda ---------------------------------------------------------
     top_k: int = Field(default=5, ge=1, le=50)
 
+    # --- ASR (audio/video — Fase 2) ---------------------------------------
+    asr_model: str = "base"  # tiny | base | small | medium | large-v3 (faster-whisper)
+    asr_device: str | None = None  # "cpu", "cuda", None = auto
+    asr_compute_type: str = "int8"  # int8 es rápido y ligero en CPU
+    asr_language: str | None = None  # None = detección automática; "es", "en", …
+
     # --- Conectores externos ---------------------------------------------
     # Directorios con conectores externos: <dir>/<nombre>/connector.py
     connector_dirs: Annotated[list[str], NoDecode] = Field(default_factory=list)

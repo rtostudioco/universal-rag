@@ -57,6 +57,10 @@ class Citation(BaseModel):
     title: str | None = None
     quote: str
     score: float = 0.0
+    # Citas por minuto (audio/video — Fase 2)
+    start_time: float | None = None
+    end_time: float | None = None
+    timestamp: str | None = None  # "[03:12–04:05]" ya formateado
 
 
 class Answer(BaseModel):

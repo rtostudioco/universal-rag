@@ -122,6 +122,14 @@ class OpenAICompatGenerator(BaseGenerator):
             meta = retrieved.chunk.metadata
             label = meta.get("title") or meta.get("uri") or "(sin título)"
             source = f"fuente={meta.get('source', '?')} uri={meta.get('uri', '?')}"
+            # citas por minuto (audio/video)
+            start_time, end_time = meta.get("start_time"), meta.get("end_time")
+            if start_time is not None or end_time is not None:
+                from universal_rag.core.transcript import format_range
+
+                when = format_range(start_time, end_time)
+                if when:
+                    source += f" minuto {when}"
             body = truncate(retrieved.chunk.text, self.max_context_chars // max(1, len(contexts)))
             block = f"[{i}] {label} ({source})\n{body}"
             if used + len(block) > self.max_context_chars and blocks:

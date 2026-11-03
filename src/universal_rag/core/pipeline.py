@@ -151,6 +151,15 @@ class RAGPipeline:
         for i in valid:
             retrieved = contexts[i - 1]
             meta = retrieved.chunk.metadata
+            start_time = meta.get("start_time")
+            end_time = meta.get("end_time")
+            has_time = start_time is not None or end_time is not None
+            if has_time:
+                from universal_rag.core.transcript import format_range
+
+                quote_text = f"{format_range(start_time, end_time)} {chunk_quote(retrieved.chunk.text)}"
+            else:
+                quote_text = chunk_quote(retrieved.chunk.text)
             citations.append(
                 Citation(
                     chunk_id=retrieved.chunk.id,
@@ -158,8 +167,11 @@ class RAGPipeline:
                     source=str(meta.get("source", "?")),
                     uri=str(meta.get("uri", "")),
                     title=meta.get("title"),
-                    quote=chunk_quote(retrieved.chunk.text),
+                    quote=quote_text,
                     score=retrieved.score,
+                    start_time=float(start_time) if start_time is not None else None,
+                    end_time=float(end_time) if end_time is not None else None,
+                    timestamp=format_range(start_time, end_time) if has_time else None,
                 )
             )
         return citations

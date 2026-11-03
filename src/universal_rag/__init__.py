@@ -23,7 +23,7 @@ from universal_rag.core.models import (
 )
 from universal_rag.core.pipeline import RAGPipeline
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Answer",

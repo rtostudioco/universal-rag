@@ -53,6 +53,9 @@ class BaseConnector(ABC):
     description: ClassVar[str] = ""
     schemes: ClassVar[tuple[str, ...]] = ()
     extensions: ClassVar[tuple[str, ...]] = ()
+    # Prioridad de routing: mayor = se consulta antes. Útil cuando varios
+    # conectores pueden reclamar la misma fuente (p. ej. youtube:// vs http://).
+    priority: ClassVar[int] = 0
 
     # ------------------------------------------------------------------ API
     def can_handle(self, source: str) -> bool:
@@ -147,8 +150,9 @@ class ConnectorRegistry:
             ) from exc
 
     def resolve(self, source: str) -> BaseConnector:
-        """Elige el primer conector que sepa manejar ``source``."""
-        for connector in self._connectors.values():
+        """Elige el conector de mayor prioridad que sepa manejar ``source``."""
+        candidates = sorted(self._connectors.values(), key=lambda c: -c.priority)
+        for connector in candidates:
             try:
                 if connector.can_handle(source):
                     return connector

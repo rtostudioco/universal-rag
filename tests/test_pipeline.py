@@ -100,7 +100,7 @@ def test_stats(pipeline_con_datos):
     assert stats["documents"] == 2
     assert stats["store"] == "memory"
     assert stats["embedder"] == "hash"
-    assert set(stats["connectors"]) == {"text", "file", "url"}
+    assert {"text", "file", "url"} <= set(stats["connectors"])
 
 
 def test_clear(pipeline_con_datos):

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "universal-rag"
-version = "0.1.0"
-description = "Universal RAG: pipeline de Retrieval-Augmented Generation plugable — conectores universales (texto, archivos, URLs, y más adelante audio/video/Drive), embeddings locales, ChromaDB y respuestas con citas."
+version = "0.2.0"
+description = "Universal RAG: pipeline de Retrieval-Augmented Generation plugable — conectores universales (texto, archivos, URLs, audio, video, YouTube, Drive), embeddings locales, ChromaDB y respuestas con citas verificables."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -35,12 +35,17 @@ dependencies = [
     "lxml>=5.0",
     "trafilatura>=1.12",
     "mcp>=1.9.0,<2.0",
+    "gdown>=5.0",
     "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
 local = [
     "sentence-transformers>=2.7",
+]
+media = [
+    "faster-whisper>=1.0",
+    "yt-dlp>=2024.8.26",
 ]
 dev = [
     "pytest>=8.0",
