@@ -1,6 +1,7 @@
 """API REST de Universal RAG (FastAPI).
 
 Endpoints:
+    GET    /                    mini chat UI (HTML)
     GET    /health              estado del servicio
     GET    /stats               estadísticas del pipeline
     POST   /ingest              ingesta por fuente (resuelve conector automático)
@@ -17,14 +18,18 @@ Uso::
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from universal_rag import __version__
 from universal_rag.core.config import Settings
 from universal_rag.core.pipeline import RAGPipeline
+
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 class IngestRequest(BaseModel):
@@ -52,14 +57,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version=__version__,
         description=(
             "Pipeline plugable de Retrieval-Augmented Generation: ingesta universal "
-            "(texto, archivos, URLs — audio/video en Fase 2), búsqueda semántica y "
-            "respuestas con citas verificables."
+            "(texto, archivos, URLs, audio, video, YouTube, Drive), búsqueda vectorial "
+            "o híbrida (BM25 + reranker) y respuestas con citas verificables."
         ),
     )
     app.state.settings = settings or Settings()
     app.state.pipeline = RAGPipeline(settings=app.state.settings)
 
     # ------------------------------------------------------------------ basic
+    @app.get("/", include_in_schema=False)
+    def chat_ui() -> HTMLResponse:
+        """Mini chat UI (HTML autocontenido, sin CDNs)."""
+        return HTMLResponse((_STATIC_DIR / "chat.html").read_text(encoding="utf-8"))
+
     @app.get("/health", tags=["system"], summary="Estado del servicio")
     def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__}

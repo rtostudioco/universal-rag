@@ -5,18 +5,22 @@ Universal RAG sigue la misma filosofía que Universal MCP: **núcleo pequeño y 
 ## 1. Vista general del pipeline
 
 ```
-┌─────────────┐   ┌──────────────────┐   ┌──────────┐   ┌──────────┐   ┌──────────────┐   ┌───────────┐
-│   fuente     │─▶│ ConnectorRegistry │──▶│ Document │──▶│ Chunker  │──▶│  Embedder    │──▶│ VectorStore│
-│ (pdf/url/…) │   │ (auto-discovery)  │   │ (modelo) │   │ (troceo) │   │ (local)     │   │ (Chroma)  │
-└─────────────┘   └──────────────────┘   └──────────┘   └──────────┘   └──────────────┘   └─────┬─────┘
-                                                                                                 │
-   pregunta ────────────────────────────────▶ Retriever ◀────────────────────────────────────────┘
-                                                 │ RetrievedChunks (con scores)
-                                                 ▼
-                                        Generator (LLM plugable)
-                                                 │
-                                                 ▼
-                                     Answer + Citations [1][2]…
+┌─────────────┐   ┌──────────────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌────────────┐
+│   fuente     │─▶│ ConnectorRegistry │──▶│ Document │──▶│ Chunker  │──▶│ Embedder │──▶│VectorStore │
+│ (pdf/url/…) │   │ (auto-discovery)  │   │ (modelo) │   │ (troceo) │   │ (local)  │   │  (Chroma)  │
+└─────────────┘   └──────────────────┘   └──────────┘   └──────────┘   └──────────┘   └─────┬──────┘
+                                                                                              │
+   pregunta ──▶ Retriever ◀───────────────────────────────────────────────────────────────────┘
+                   │  vectorial (coseno)  ──o── híbrido: + BM25, fusión RRF/weighted (F3)
+                   │ RetrievedChunks (candidate_k)
+                   ▼
+                Reranker (F3, opcional: cross-encoder local)
+                   │ top-k reordenado
+                   ▼
+                Generator (LLM plugable)
+                   │
+                   ▼
+            Answer + Citations [1][2]… [mm:ss–mm:ss]
 ```
 
 Todo lo anterior está orquestado por `RAGPipeline` (`core/pipeline.py`), la única pieza que consumen la API, el CLI y el servidor MCP.
@@ -27,9 +31,9 @@ Todo lo anterior está orquestado por `RAGPipeline` (`core/pipeline.py`), la ún
 |---|---|
 | `Document` | Unidad universal de conocimiento: `id`, `content`, `source`, `uri`, `title`, `metadata`, `created_at` (fecha de origen, p. ej. de un MP3 en Fase 2), `ingested_at`. |
 | `Chunk` | Fragmento vectorizable: texto, posición (`index`/`total`), metadatos heredados del documento. |
-| `RetrievedChunk` | Chunk + score de similitud (coseno; mayor = mejor). |
-| `Citation` | Referencia verificable: `uri`, `source`, `title`, `quote`, `score`. |
-| `Answer` | Respuesta final: texto, citas, modelo usado, latencia, nº de contextos. |
+| `RetrievedChunk` | Chunk + score de similitud (coseno; mayor = mejor). En modo híbrido, score de fusión (RRF o ponderada). |
+| `Citation` | Referencia verificable: `uri`, `source`, `title`, `quote`, `score` — y en media, `start_time`/`end_time`/`timestamp` `[mm:ss–mm:ss]`. |
+| `Answer` | Respuesta final: texto, citas, modelo usado, latencia, nº de contextos y `retrieval` (modo de búsqueda activo). |
 | `IngestResult` | Resumen de ingesta: documentos, chunks, omitidos, errores. |
 
 **Invariante clave**: cualquier conector, sin importar el origen, produce `Document`. El resto del pipeline ignora por completo de dónde vino el contenido.
@@ -102,12 +106,28 @@ Estrategia determinista con **dos rutas**:
 
 ## 6. Almacenes vectoriales (core/store.py)
 
-Contrato `BaseVectorStore`: `add`, `query(embedding, k, where)`, `delete_document`, `count_chunks`, `list_documents`, `clear`.
+Contrato `BaseVectorStore`: `add`, `query(embedding, k, where)`, `all_chunks(where)` (Fase 3: alimenta el índice BM25), `delete_document`, `count_chunks`, `list_documents`, `clear`.
 
 - **`ChromaVectorStore`** (default): ChromaDB embebido y persistente (`RAG_CHROMA_PATH`), colección con espacio **coseno**. Metadatos aplanados a primitivos (dicts/listas → JSON string).
 - **`InMemoryVectorStore`**: coseno puro en RAM. Para tests y demos sin persistencia.
 
 Ambos devuelven scores como **similitud** (Chroma entrega distancias; se convierte `1 − dist`).
+
+## 6b. Recuperación híbrida y reranking (Fase 3)
+
+El `Retriever` (`core/retriever.py`) encadena tres etapas:
+
+1. **Vectorial** (Fase 1): embeddings de la consulta vs `store.query()`.
+2. **Híbrida** (opcional, `RAG_RETRIEVAL=hybrid`): un **BM25Okapi propio y sin dependencias** (`core/bm25.py`) se construye en memoria sobre `store.all_chunks()` (cacheado; se invalida tras cada ingesta/borrado/vaciado) y su ranking se fusiona con el vectorial (`core/hybrid.py`) vía **RRF** (`score = Σ 1/(k+rank)`, robusta a escalas distintas) o **suma ponderada** con min-max (`RAG_HYBRID_ALPHA` controla el peso vectorial). Brillante con códigos, nombres propios y términos exactos que los embeddings diluyen.
+3. **Reranking** (opcional, `RAG_RERANKER=cross-encoder`): se recuperan `candidate_k` candidatos y un cross-encoder (`core/rerank.py`, `bge-reranker-base` multilingüe por defecto) los reordena con máxima precisión; el score pasa por sigmoide para mantener `[0, 1]` y monotonía. Carga perezosa: si falta `sentence-transformers`, solo falla al reranquear, con mensaje de instalación.
+
+Con `RAG_RERANKER=none` y `RAG_RETRIEVAL=vector` (defaults) el comportamiento es idéntico a Fase 1/2 — cero regresiones.
+
+## 6c. Evaluación de calidad (core/evaluation.py, Fase 3)
+
+- Golden sets en JSONL: `{"query": …, "relevant": [ids/URIs/títulos]}` (match insensible a mayúsculas).
+- Métricas sobre el top-k: **precision** (hits/recuperados), **recall** (hits/relevantes), **MRR** (rank del primer acierto) y **hit_rate**.
+- Interfaces: función `evaluate()` (Python), comando `universal-rag eval golden.jsonl` (tabla o `--json`), ejemplo en `examples/golden.jsonl`.
 
 ## 7. Generación (core/generator.py)
 
@@ -120,8 +140,8 @@ Contrato: `generate(question, contexts) -> (texto, modelo)`; el pipeline convier
 
 | Interfaz | Archivo | Notas |
 |---|---|---|
-| API REST | `api/app.py` (FastAPI) | `/health`, `/stats`, `/ingest`, `/ingest/text`, `/query`, `/documents`, `/documents/{id}` |
-| CLI | `cli.py` (Typer) | `ingest`, `text`, `query`, `documents`, `delete`, `clear`, `stats`, `serve`, `mcp` |
+| API REST | `api/app.py` (FastAPI) | `/` (mini chat UI, Fase 3), `/health`, `/stats`, `/ingest`, `/ingest/text`, `/query`, `/documents`, `/documents/{id}` |
+| CLI | `cli.py` (Typer) | `ingest`, `text`, `query`, `chat` (F3), `eval` (F3), `documents`, `delete`, `clear`, `stats`, `serve`, `mcp` |
 | MCP | `mcp_server.py` (FastMCP, SDK oficial) | 6 tools `rag_*`; stdio o streamable-http |
 
 Las tres comparten el mismo `RAGPipeline`; no hay lógica duplicada.
@@ -141,3 +161,5 @@ Las tres comparten el mismo `RAGPipeline`; no hay lógica duplicada.
 - **IDs deterministas** (`sha256` truncado): re-ingesta idempotente, chunk IDs estables, deduplicación natural.
 - **Embeddings por defecto locales**: privacidad total del corpus; el LLM es opcional (modo extractivo).
 - **ChromaDB embebido**: cero infraestructura (sin servidor de vectores), persistencia en disco, API estable.
+- **BM25 propio (Fase 3)**: ~80 líneas sin dependencias — el corpus de un RAG típico se reindexa en milisegundos, y evitamos sumar dependencias nativas.
+- **Híbrido desactivado por defecto**: `RAG_RETRIEVAL=vector` preserva el comportamiento de versiones anteriores; el híbrido es opt-in pero recomendado.

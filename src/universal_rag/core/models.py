@@ -72,6 +72,7 @@ class Answer(BaseModel):
     model: str  # nombre del generador usado
     latency_ms: float = 0.0
     context_count: int = 0
+    retrieval: str | None = None  # modo de búsqueda: "vector", "hybrid", "hybrid+cross-encoder"…
 
 
 class IngestResult(BaseModel):

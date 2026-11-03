@@ -4,15 +4,20 @@ Comandos:
     ingest SOURCE    ingesta un archivo/URL/patrón
     text TEXT        ingesta texto directo
     query QUESTION   pregunta con respuesta y citas
+    chat             chat interactivo en la terminal
+    eval GOLDEN      evalúa la recuperación con un golden set (JSONL)
     stats            estadísticas
     documents        lista documentos
     delete DOC_ID    elimina un documento
     clear            vacía el índice
-    serve            arranca la API REST
+    serve            arranca la API REST (con mini chat UI en /)
     mcp              arranca el servidor MCP
 """
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -83,11 +88,86 @@ def query(
         table.add_column("#", justify="right", style="cyan")
         table.add_column("Fuente", style="magenta")
         table.add_column("Título")
+        table.add_column("Momento", style="green", overflow="fold")
         table.add_column("Score", justify="right", style="green")
         table.add_column("Cita", overflow="fold")
         for i, citation in enumerate(answer.citations, start=1):
-            table.add_row(str(i), citation.source, citation.title or "—", f"{citation.score:.3f}", citation.quote)
+            table.add_row(
+                str(i),
+                citation.source,
+                citation.title or "—",
+                citation.timestamp or "—",
+                f"{citation.score:.3f}",
+                citation.quote,
+            )
         console.print(table)
+
+
+@app.command()
+def chat(k: int | None = typer.Option(None, "--k", "-k", min=1, max=50)) -> None:
+    """Chat interactivo en la terminal ('salir' para terminar)."""
+    pipeline = _pipeline()
+    console.print(
+        f"[cyan]Universal RAG[/cyan] · búsqueda [bold]{pipeline.retrieval_label()}[/bold] · "
+        "escribe [bold]salir[/bold] para terminar"
+    )
+    while True:
+        try:
+            question = console.input("\n[bold green]Tú ▸ [/bold green]").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not question:
+            continue
+        if question.lower() in {"salir", "exit", "quit", "q"}:
+            break
+        answer = pipeline.query(question, k=k)
+        console.print(Panel(answer.answer, title=f"{answer.model} · {answer.latency_ms:.0f} ms"))
+        for i, citation in enumerate(answer.citations, start=1):
+            moment = f" {citation.timestamp}" if citation.timestamp else ""
+            console.print(f"  [cyan][{i}][/] {citation.title or citation.source}{moment}")
+            console.print(f"      [dim]{citation.quote}[/dim]")
+    console.print("[dim]¡Hasta luego![/dim]")
+
+
+@app.command("eval")
+def eval_command(
+    golden: Path = typer.Argument(..., exists=True, dir_okay=False, help="Golden set JSONL/JSON"),
+    k: int = typer.Option(5, "--k", "-k", min=1, max=50, help="Top-k a evaluar"),
+    json_output: bool = typer.Option(False, "--json", help="Reporte JSON completo"),
+) -> None:
+    """Evalúa la calidad de recuperación con un golden set."""
+    from universal_rag.core.evaluation import evaluate, load_golden
+
+    cases = load_golden(golden)
+    if not cases:
+        console.print("[red]El golden set no contiene casos válidos.[/red]")
+        raise typer.Exit(code=1)
+    report = evaluate(_pipeline(), cases, k=k)
+    if json_output:
+        console.print_json(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    table = Table(title=f"Evaluación · {report['cases']} caso(s) · k={k}")
+    table.add_column("Consulta", overflow="fold")
+    table.add_column("Relevantes")
+    table.add_column("Hits", justify="right")
+    table.add_column("P", justify="right", style="green")
+    table.add_column("R", justify="right", style="cyan")
+    table.add_column("MRR", justify="right", style="magenta")
+    for case in report["per_case"]:
+        table.add_row(
+            case["query"],
+            ", ".join(case["relevant"]) or "—",
+            str(case["hits"]),
+            f"{case['precision']:.2f}",
+            f"{case['recall']:.2f}",
+            f"{case['mrr']:.2f}",
+        )
+    console.print(table)
+    console.print(
+        f"[bold]Agregado[/bold] · precision [green]{report['precision']:.3f}[/green] · "
+        f"recall [cyan]{report['recall']:.3f}[/cyan] · MRR [magenta]{report['mrr']:.3f}[/magenta] · "
+        f"hit_rate {report['hit_rate']:.3f}"
+    )
 
 
 @app.command()

@@ -62,6 +62,18 @@ class Settings(BaseSettings):
     # --- Búsqueda ---------------------------------------------------------
     top_k: int = Field(default=5, ge=1, le=50)
 
+    # --- Búsqueda híbrida (Fase 3) -----------------------------------------
+    # hybrid = fusión del ranking vectorial con BM25 (léxico) sobre el corpus.
+    retrieval: Literal["vector", "hybrid"] = "vector"
+    hybrid_fusion: Literal["rrf", "weighted"] = "rrf"  # rrf | weighted (min-max)
+    hybrid_rrf_k: int = Field(default=60, ge=1)  # constante k de Reciprocal Rank Fusion
+    hybrid_alpha: float = Field(default=0.55, ge=0.0, le=1.0)  # peso vectorial en "weighted"
+    candidate_k: int = Field(default=25, ge=1, le=200)  # candidatos antes de rerank/top-k
+
+    # --- Reranking (Fase 3) --------------------------------------------------
+    reranker: Literal["none", "cross-encoder"] = "none"
+    rerank_model: str = "BAAI/bge-reranker-base"  # multilingüe (buen español); requiere [local]
+
     # --- ASR (audio/video — Fase 2) ---------------------------------------
     asr_model: str = "base"  # tiny | base | small | medium | large-v3 (faster-whisper)
     asr_device: str | None = None  # "cpu", "cuda", None = auto

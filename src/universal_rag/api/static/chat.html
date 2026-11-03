@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Universal RAG · Chat</title>
+<style>
+  :root{
+    --bg:#0e0e11; --panel:#16161b; --panel-2:#1d1d24; --line:#2a2a33;
+    --text:#ececf1; --muted:#9b9ba7; --accent:#f5a623; --accent-2:#34d399;
+    --user:#2c2c35; --radius:14px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg);color:var(--text);display:flex;flex-direction:column;
+  }
+  header{
+    display:flex;align-items:center;gap:12px;padding:14px 20px;
+    border-bottom:1px solid var(--line);background:var(--panel);
+  }
+  .logo{
+    width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+    background:linear-gradient(135deg,var(--accent),#d97706);font-weight:800;color:#1a1a1a;
+  }
+  .title{font-weight:700;font-size:1.05rem}
+  .subtitle{font-size:.75rem;color:var(--muted)}
+  .status{display:flex;align-items:center;gap:6px;font-size:.75rem;color:var(--muted);margin-left:auto}
+  .dot{width:8px;height:8px;border-radius:50%;background:#6b7280;transition:background .3s}
+  .dot.ok{background:var(--accent-2)}
+  .dot.bad{background:#ef4444}
+  .reset{
+    border:1px solid var(--line);background:transparent;color:var(--muted);
+    padding:6px 12px;border-radius:9px;font-size:.78rem;cursor:pointer;transition:.2s;
+  }
+  .reset:hover{color:var(--text);border-color:var(--muted)}
+  main{
+    flex:1;overflow-y:auto;padding:22px 16px;scroll-behavior:smooth;
+  }
+  .wrap{max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+  .empty{
+    text-align:center;color:var(--muted);padding:38px 10px;
+  }
+  .empty h1{font-size:1.35rem;color:var(--text);margin-bottom:6px}
+  .empty p{font-size:.9rem;margin-bottom:20px}
+  .examples{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+  .example{
+    border:1px solid var(--line);background:var(--panel);color:var(--text);
+    padding:9px 14px;border-radius:999px;font-size:.82rem;cursor:pointer;transition:.2s;
+  }
+  .example:hover{border-color:var(--accent);color:var(--accent)}
+  .msg{display:flex;flex-direction:column;gap:6px}
+  .msg .who{font-size:.72rem;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
+  .bubble{
+    padding:13px 16px;border-radius:var(--radius);line-height:1.55;font-size:.93rem;
+    white-space:pre-wrap;word-wrap:break-word;
+  }
+  .msg.user{align-items:flex-end}
+  .msg.user .bubble{background:var(--user);max-width:85%}
+  .msg.bot{align-items:stretch}
+  .msg.bot .bubble{background:var(--panel);border:1px solid var(--line);border-top-left-radius:4px}
+  .badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+  .badge{
+    font-size:.68rem;color:var(--muted);border:1px solid var(--line);
+    padding:2px 8px;border-radius:999px;background:var(--panel);
+  }
+  .badge.acc{color:var(--accent);border-color:#5a4218}
+  .badge.ok{color:var(--accent-2);border-color:#1d4a38}
+  .cites{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+  .cite{
+    border:1px solid var(--line);border-left:3px solid var(--accent);
+    background:var(--panel-2);border-radius:10px;padding:9px 12px;font-size:.8rem;
+  }
+  .cite .head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:4px}
+  .cite .num{
+    background:var(--accent);color:#1a1a1a;font-weight:700;font-size:.68rem;
+    width:18px;height:18px;border-radius:6px;display:grid;place-items:center;flex:none;
+  }
+  .cite .src{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
+  .cite .ts{
+    color:var(--accent-2);font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap;
+  }
+  .cite .score{color:var(--muted);margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .cite .quote{color:var(--muted);line-height:1.45}
+  .thinking{display:flex;gap:5px;padding:6px 2px}
+  .thinking span{
+    width:7px;height:7px;border-radius:50%;background:var(--muted);
+    animation:pulse 1.2s infinite ease-in-out;
+  }
+  .thinking span:nth-child(2){animation-delay:.18s}
+  .thinking span:nth-child(3){animation-delay:.36s}
+  @keyframes pulse{0%,80%,100%{opacity:.25;transform:scale(.85)}40%{opacity:1;transform:scale(1)}}
+  .error{border-left-color:#ef4444 !important;color:#fca5a5}
+  footer{
+    border-top:1px solid var(--line);background:var(--panel);padding:14px 16px
+      calc(14px + env(safe-area-inset-bottom,0px));
+  }
+  .inputbar{
+    max-width:760px;margin:0 auto;display:flex;gap:10px;align-items:flex-end;
+  }
+  textarea{
+    flex:1;resize:none;background:var(--panel-2);border:1px solid var(--line);
+    color:var(--text);border-radius:12px;padding:11px 14px;font:inherit;font-size:.92rem;
+    min-height:46px;max-height:140px;outline:none;transition:border-color .2s;
+  }
+  textarea:focus{border-color:var(--accent)}
+  textarea::placeholder{color:var(--muted)}
+  button.send{
+    background:var(--accent);color:#1a1a1a;border:none;border-radius:12px;
+    width:46px;height:46px;cursor:pointer;display:grid;place-items:center;transition:.2s;flex:none;
+  }
+  button.send:hover{filter:brightness(1.1)}
+  button.send:disabled{opacity:.45;cursor:not-allowed}
+  button.send svg{width:20px;height:20px}
+  main::-webkit-scrollbar{width:9px}
+  main::-webkit-scrollbar-thumb{background:var(--line);border-radius:9px}
+  @media(max-width:560px){
+    header{padding:12px 14px}
+    .subtitle{display:none}
+    .msg.user .bubble{max-width:94%}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">R</div>
+  <div>
+    <div class="title">Universal RAG</div>
+    <div class="subtitle">respuestas con citas verificables</div>
+  </div>
+  <div class="status"><span class="dot" id="dot"></span><span id="status-text">conectando…</span></div>
+  <button class="reset" id="reset" title="Vaciar conversación">Vaciar</button>
+</header>
+
+<main id="main">
+  <div class="wrap" id="wrap">
+    <div class="empty" id="empty">
+      <h1>¿Qué quieres preguntarle a tus documentos?</h1>
+      <p>Todo lo ingestado (texto, archivos, URLs, audio, video…) es consultable aquí.</p>
+      <div class="examples" id="examples"></div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="inputbar">
+    <textarea id="input" rows="1" placeholder="Escribe tu pregunta… (Enter para enviar)"></textarea>
+    <button class="send" id="send" aria-label="Enviar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 12h14M13 6l6 6-6 6"/>
+      </svg>
+    </button>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var main = document.getElementById("main"),
+      wrap = document.getElementById("wrap"),
+      empty = document.getElementById("empty"),
+      input = document.getElementById("input"),
+      send = document.getElementById("send"),
+      reset = document.getElementById("reset"),
+      dot = document.getElementById("dot"),
+      statusText = document.getElementById("status-text"),
+      examples = document.getElementById("examples"),
+      busy = false;
+
+  var SUGGESTIONS = [
+    "Resumen de la base de conocimiento",
+    "¿Qué documentos hay disponibles?",
+    "Hazme un resumen por temas"
+  ];
+  SUGGESTIONS.forEach(function(text){
+    var b = document.createElement("button");
+    b.className = "example"; b.textContent = text;
+    b.addEventListener("click", function(){ ask(text); });
+    examples.appendChild(b);
+  });
+
+  function esc(s){
+    return String(s == null ? "" : s)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;");
+  }
+
+  function scrollDown(){ main.scrollTop = main.scrollHeight; }
+
+  function addUser(text){
+    hideEmpty();
+    var div = document.createElement("div");
+    div.className = "msg user";
+    div.innerHTML = '<div class="who">Tú</div><div class="bubble"></div>';
+    div.querySelector(".bubble").textContent = text;
+    wrap.appendChild(div); scrollDown();
+  }
+
+  function addThinking(){
+    var div = document.createElement("div");
+    div.className = "msg bot"; div.id = "thinking";
+    div.innerHTML = '<div class="who">Universal RAG</div>' +
+      '<div class="bubble"><div class="thinking"><span></span><span></span><span></span></div></div>';
+    wrap.appendChild(div); scrollDown();
+  }
+
+  function removeThinking(){
+    var t = document.getElementById("thinking");
+    if(t) t.remove();
+  }
+
+  function hideEmpty(){ if(empty && empty.parentNode) empty.remove(); }
+
+  function renderBot(answer){
+    removeThinking();
+    var div = document.createElement("div");
+    div.className = "msg bot";
+    var html = '<div class="who">Universal RAG</div>' +
+      '<div class="bubble">' + esc(answer.answer) + '</div>' +
+      '<div class="badges">' +
+        '<span class="badge acc">' + esc(answer.model || "—") + '</span>' +
+        (answer.retrieval ? '<span class="badge">' + esc(answer.retrieval) + '</span>' : '') +
+        '<span class="badge">' + Number(answer.latency_ms || 0).toFixed(0) + ' ms</span>' +
+        '<span class="badge">' + (answer.context_count || 0) + ' fragmentos</span>' +
+      '</div>';
+    if(answer.citations && answer.citations.length){
+      html += '<div class="cites">';
+      answer.citations.forEach(function(c, i){
+        html += '<div class="cite"><div class="head">' +
+          '<span class="num">' + (i + 1) + '</span>' +
+          '<span class="src" title="' + esc(c.uri || "") + '">' +
+            esc(c.title || c.source || "fuente") + '</span>' +
+          (c.timestamp ? '<span class="ts">⏱ ' + esc(c.timestamp) + '</span>' : '') +
+          '<span class="score">score ' + Number(c.score || 0).toFixed(3) + '</span>' +
+          '</div><div class="quote">' + esc(c.quote || "") + '</div></div>';
+      });
+      html += '</div>';
+    }
+    div.innerHTML = html;
+    wrap.appendChild(div); scrollDown();
+  }
+
+  function renderError(message){
+    removeThinking();
+    var div = document.createElement("div");
+    div.className = "msg bot";
+    div.innerHTML = '<div class="who">Universal RAG</div>' +
+      '<div class="bubble error">' + esc(message) + '</div>';
+    wrap.appendChild(div); scrollDown();
+  }
+
+  function ask(text){
+    text = (text || "").trim();
+    if(!text || busy) return;
+    busy = true; send.disabled = true;
+    addUser(text); addThinking();
+    fetch("/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: text })
+    })
+    .then(function(res){
+      if(!res.ok) return res.json().catch(function(){ return {}; })
+        .then(function(body){ throw new Error(body.detail ? JSON.stringify(body.detail) : ("HTTP " + res.status)); });
+      return res.json();
+    })
+    .then(renderBot)
+    .catch(function(err){ renderError("Error: " + err.message); })
+    .finally(function(){ busy = false; send.disabled = false; input.focus(); });
+  }
+
+  function submit(){
+    var text = input.value.trim();
+    if(!text || busy) return;
+    input.value = ""; input.style.height = "auto";
+    ask(text);
+  }
+
+  send.addEventListener("click", submit);
+  input.addEventListener("keydown", function(e){
+    if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); submit(); }
+  });
+  input.addEventListener("input", function(){
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 140) + "px";
+  });
+  reset.addEventListener("click", function(){
+    wrap.innerHTML = "";
+    wrap.appendChild(empty);
+    empty.style.display = "";
+    input.focus();
+  });
+
+  fetch("/health").then(function(res){ return res.json(); }).then(function(data){
+    dot.className = "dot ok";
+    statusText.textContent = "en línea · v" + (data.version || "?");
+  }).catch(function(){
+    dot.className = "dot bad";
+    statusText.textContent = "sin conexión con la API";
+  });
+
+  input.focus();
+})();
+</script>
+</body>
+</html>

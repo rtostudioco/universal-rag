@@ -36,6 +36,10 @@ class BaseVectorStore(ABC):
     ) -> list[RetrievedChunk]: ...
 
     @abstractmethod
+    def all_chunks(self, where: dict[str, Any] | None = None) -> list[Chunk]:
+        """Todos los fragmentos (opcionalmente filtrados) — índice léxico BM25 (Fase 3)."""
+
+    @abstractmethod
     def delete_document(self, document_id: str) -> int: ...
 
     @abstractmethod
@@ -96,6 +100,23 @@ class InMemoryVectorStore(BaseVectorStore):
                 )
             )
         return results
+
+    def all_chunks(self, where: dict[str, Any] | None = None) -> list[Chunk]:
+        chunks: list[Chunk] = []
+        for chunk_id, (_, text, meta) in self._entries.items():
+            if where and not self._matches(meta, where):
+                continue
+            chunks.append(
+                Chunk(
+                    id=chunk_id,
+                    document_id=str(meta.get("document_id", "")),
+                    text=text,
+                    index=int(meta.get("index", 0)),
+                    total=int(meta.get("total", 0)),
+                    metadata=dict(meta),
+                )
+            )
+        return chunks
 
     def delete_document(self, document_id: str) -> int:
         victims = [cid for cid, (_, _, meta) in self._entries.items() if meta.get("document_id") == document_id]
@@ -212,6 +233,28 @@ class ChromaVectorStore(BaseVectorStore):
                 )
             )
         return results
+
+    def all_chunks(self, where: dict[str, Any] | None = None) -> list[Chunk]:
+        if self.collection.count() == 0:
+            return []
+        data = self.collection.get(include=["documents", "metadatas"], where=where or None)
+        chunks: list[Chunk] = []
+        ids = data.get("ids") or []
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+        for chunk_id, text, meta in zip(ids, docs, metas, strict=False):
+            meta = dict(meta or {})
+            chunks.append(
+                Chunk(
+                    id=str(chunk_id),
+                    document_id=str(meta.get("document_id", "")),
+                    text=str(text or ""),
+                    index=int(meta.get("index", 0)),
+                    total=int(meta.get("total", 0)),
+                    metadata=meta,
+                )
+            )
+        return chunks
 
     def delete_document(self, document_id: str) -> int:
         before = self.collection.count()

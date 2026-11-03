@@ -7,7 +7,9 @@ Núcleo:
     Chunker                    división configurable con solapamiento
     BaseEmbedder / ...         embeddings locales (hash determinista o sentence-transformers)
     BaseVectorStore / ...      almacenes vectoriales (ChromaDB o memoria)
-    Retriever                  búsqueda semántica con scores
+    Retriever                  búsqueda vectorial o híbrida (BM25 + reranker)
+    BaseReranker / ...         rerankers plugables (no-op o cross-encoder local)
+    evaluate / load_golden     evaluación de calidad con golden sets
     BaseGenerator / ...        generación plugable (extractiva o LLM compatible OpenAI)
     RAGPipeline                orquestación completa: ingest -> query con citas
 """
@@ -23,7 +25,7 @@ from universal_rag.core.models import (
 )
 from universal_rag.core.pipeline import RAGPipeline
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Answer",

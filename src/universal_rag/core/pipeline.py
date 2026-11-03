@@ -50,7 +50,9 @@ class RAGPipeline:
         self.embedder = embedder or create_embedder(self.settings)
         self.store = store or create_store(self.settings)
         self.generator = generator or create_generator(self.settings)
-        self.retriever = Retriever(self.embedder, self.store, top_k=self.settings.top_k)
+        self.retriever = Retriever(
+            self.embedder, self.store, top_k=self.settings.top_k, settings=self.settings
+        )
 
     # ------------------------------------------------------------------ INGEST
     def ingest(self, source: str, connector: str | None = None, **options: Any) -> IngestResult:
@@ -101,6 +103,7 @@ class RAGPipeline:
                     continue
                 embeddings = self.embedder.embed([chunk.text for chunk in chunks])
                 self.store.add(chunks, embeddings)
+                self.retriever.invalidate_index()  # el índice léxico quedó obsoleto
                 result.documents += 1
                 result.chunks += len(chunks)
                 result.document_ids.append(document.id)
@@ -128,6 +131,7 @@ class RAGPipeline:
                 model=self.generator.name,
                 latency_ms=round((time.perf_counter() - started) * 1000, 2),
                 context_count=0,
+                retrieval=self.retrieval_label(),
             )
         text, model_name = self.generator.generate(question, contexts)
         citations = self._build_citations(text, contexts)
@@ -138,7 +142,15 @@ class RAGPipeline:
             model=model_name,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
             context_count=len(contexts),
+            retrieval=self.retrieval_label(),
         )
+
+    def retrieval_label(self) -> str:
+        """Etiqueta del modo de búsqueda activo, p. ej. ``hybrid+cross-encoder``."""
+        label = self.settings.retrieval
+        if self.retriever.reranker.name != "noop":
+            label = f"{label}+{self.retriever.reranker.name}"
+        return label
 
     def _build_citations(self, answer_text: str, contexts: list[RetrievedChunk]) -> list[Citation]:
         """Convierte los marcadores [n] del texto en citas estructuradas."""
@@ -188,6 +200,8 @@ class RAGPipeline:
             "chunk_size": self.chunker.size,
             "chunk_overlap": self.chunker.overlap,
             "top_k": self.settings.top_k,
+            "retrieval": self.retrieval_label(),
+            "candidate_k": self.settings.candidate_k,
             "documents": len(documents),
             "chunks": self.store.count_chunks(),
             "connectors": self.registry.names(),
@@ -202,10 +216,13 @@ class RAGPipeline:
 
     def delete_document(self, document_id: str) -> bool:
         removed = self.store.delete_document(document_id)
+        if removed:
+            self.retriever.invalidate_index()
         return removed > 0
 
     def clear(self) -> None:
         self.store.clear()
+        self.retriever.invalidate_index()
 
 
 def _version() -> str:
