@@ -12,6 +12,8 @@ Endpoints:
     GET    /jobs/{id}               estado de un job
     POST   /query                   pregunta con respuesta + citas
     POST   /query/stream            pregunta con respuesta en streaming (SSE)
+    POST   /query/agent             pregunta multi-hop con plan y pasos (Fase 8)
+    POST   /query/agent/stream      agente multi-hop en streaming (SSE, Fase 8)
     GET    /conversations           conversaciones vivas (Fase 7)
     GET    /conversations/{id}      historial de una conversación
     DELETE /conversations/{id}      borra una conversación
@@ -30,6 +32,8 @@ autenticación opcional por API key (``RAG_API_KEY``) y métricas runtime.
 Fase 6: streaming SSE (``/query/stream``), caché semántica y workbench web.
 Fase 7: memoria conversacional multi-turno (``conversation_id``) y
 sincronización programada de fuentes (``/sync``).
+Fase 8: agente multi-hop (``/query/agent`` y ``/query/agent/stream``) con
+plan de sub-consultas, pasos trazables y síntesis sobre contextos fusionados.
 
 Uso::
 
@@ -42,7 +46,7 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -87,6 +91,19 @@ class QueryRequest(BaseModel):
         None,
         max_length=128,
         description="ID de conversación multi-turno (Fase 7): inyecta el historial y registra el turno",
+    )
+
+
+class QueryAgentRequest(BaseModel):
+    question: str = Field(..., min_length=1)
+    k: int | None = Field(None, ge=1, le=50, description="Contextos fusionados finales (default: RAG_TOP_K)")
+    where: dict[str, Any] | None = Field(None, description="Filtro de metadatos aplicado a cada sub-consulta")
+    collection: str | None = Field(None, description="Colección donde consultar (default si se omite)")
+    max_steps: int | None = Field(
+        None, ge=1, le=10, description="Máximo de sub-consultas (default: RAG_AGENT_MAX_STEPS)"
+    )
+    planning: Literal["auto", "heuristic", "llm"] | None = Field(
+        None, description="Modo de planificación (default: RAG_AGENT_PLANNING)"
     )
 
 
@@ -282,6 +299,68 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             headers={
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",  # desactiva buffering en proxies (nginx)
+            },
+        )
+
+    @protected.post(
+        "/query/agent",
+        tags=["query"],
+        summary="Pregunta multi-hop con plan y pasos trazables (agente)",
+    )
+    def query_agent(request: QueryAgentRequest) -> dict[str, Any]:
+        """Agente RAG (Fase 8): descompone la pregunta en sub-consultas, busca,
+        fusiona contextos y sintetiza una respuesta con citas. Devuelve el plan,
+        los pasos ejecutados y las citas sobre el ranking fusionado."""
+        app.state.metrics.inc("queries_agent")
+        pipeline = _pipeline(request.collection)
+        agent = pipeline.agent
+        if request.max_steps is not None:
+            agent.max_steps = request.max_steps
+        if request.planning is not None:
+            agent.planning = request.planning
+        result = agent.ask(request.question, k=request.k, where=request.where)
+        return result.model_dump()
+
+    @protected.post(
+        "/query/agent/stream",
+        tags=["query"],
+        summary="Pregunta multi-hop en streaming (SSE): plan → pasos → tokens",
+    )
+    def query_agent_stream(request: QueryAgentRequest) -> StreamingResponse:
+        """Server-Sent Events del agente (Fase 8): ``plan`` (sub-consultas y
+        planificador) → ``step``* (búsquedas con resultados) → ``synthesize`` →
+        ``token``* → ``done`` (AgentAnswer completo)."""
+        app.state.metrics.inc("queries_agent_stream")
+        pipeline = _pipeline(request.collection)
+        agent = pipeline.agent
+        if request.max_steps is not None:
+            agent.max_steps = request.max_steps
+        if request.planning is not None:
+            agent.planning = request.planning
+
+        def event_source():
+            try:
+                for event in agent.stream_ask(request.question, k=request.k, where=request.where):
+                    etype = event["type"]
+                    if etype == "token":
+                        data: Any = event.get("value", "")
+                    elif etype == "done":
+                        data = event.get("answer")
+                    else:
+                        data = {key: value for key, value in event.items() if key != "type"}
+                    payload = json.dumps(data, ensure_ascii=False, default=str)
+                    yield f"event: {etype}\ndata: {payload}\n\n"
+            except Exception as exc:  # noqa: BLE001 — el error viaja por el stream
+                logger.exception("Error en /query/agent/stream")
+                error_payload = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                yield f"event: error\ndata: {error_payload}\n\n"
+
+        return StreamingResponse(
+            event_source(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
             },
         )
 

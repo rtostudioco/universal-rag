@@ -3,6 +3,51 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y versionado con [SemVer](https://semver.org/lang/es/).
 
+## [0.8.0] — Fase 8: Agente RAG multi-hop con pasos trazables
+
+### Añadido
+- **Agente multi-hop** (`core/agent.py`): responde preguntas complejas en
+  varios pasos — **plan** (descomposición en sub-consultas), **búsqueda** de
+  cada sub-consulta con **refinamiento** de las que no dan resultados
+  (reformulación LLM o extracción de palabras de contenido), **fusión** de
+  fragmentos (dedupe por `chunk_id` conservando el mejor score) y
+  **síntesis** final con citas `[n]` sobre el ranking combinado.
+  Trazabilidad total: `AgentAnswer` expone `steps` (`AgentStep` con
+  acción/consulta/hallazgos/nota), `sub_queries`, `planner` y
+  `context_count`.
+- **Planificación plugable**: `auto` (LLM si el generador soporta `chat()`,
+  heurística determinista en modo echo/offline), `heuristic` (separadores y
+  conjunción « y », sin dependencias) o `llm` (JSON array con fallback
+  elegante). Reformulación con LLM o stopwords es/en propias.
+- **API**: `POST /query/agent` (respuesta completa con plan y pasos) y
+  `POST /query/agent/stream` (SSE: `plan` → `step`* → `synthesize` →
+  `token`* → `done`). Parámetros `max_steps` y `planning` por petición.
+  Métricas nuevas en `/stats`: `queries_agent`, `queries_agent_stream`
+  (y `sync_registered`/`sync_runs` que faltaban exponer).
+- **CLI**: `universal-rag ask "…"` imprime la tabla del plan, la respuesta y
+  las fuentes citadas (`--max-steps`, `--planning`, `--quiet`).
+- **MCP**: herramienta `rag_ask` para preguntas complejas desde Claude
+  Desktop / Universal MCP.
+- **Workbench**: toggle «agente» en el chat — consume `/query/agent/stream`
+  y muestra badges con el planificador, cada sub-consulta con sus hallazgos
+  y los contextos fusionados.
+- **Generador**: método público `chat(messages)` en
+  `OpenAICompatGenerator` (completación cruda para planificar/reformular sin
+  contexto RAG).
+- `RAGPipeline.agent` (perezoso), `agent_ask()`, `stream_agent_ask()` y
+  `build_citations()` público.
+- Docs: `docs/AGENT.md` (arquitectura, API, CLI, MCP, config, diseño).
+- `.env.example` y README con `RAG_AGENT_MAX_STEPS` / `RAG_AGENT_PLANNING`.
+
+### Tests
+- **34 tests nuevos (427 total)**: heurística del plan (separadores,
+  conjunciones, fusión de fragmentos cortos, límites), dedupe de contextos,
+  refinamiento (stub determinista del retriever), orden de eventos del
+  stream, planificación LLM con `httpx.MockTransport` (JSON válido, no-JSON,
+  error 500, dedupe/cap), API (respuesta, parámetros, validación, SSE,
+  métricas), MCP (`rag_ask`), CLI (`ask`, `--quiet`, planning inválido) y
+  pereza del agente en el pipeline.
+
 ## [0.7.0] — Fase 7: Conectores empresariales, memoria conversacional y sincronización
 
 ### Añadido

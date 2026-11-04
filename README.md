@@ -30,6 +30,7 @@ Hermano de [Universal MCP](https://github.com/rtostudioco/universal-mcp): misma 
 | 🏢 **Conectores empresariales (Fase 7)** | **Confluence** (espacios, páginas y búsquedas CQL; Basic/Bearer) y **SharePoint** (Microsoft Graph, client credentials, librerías de documentos con extracción PDF/DOCX/TXT/MD/CSV). |
 | 💬 **Memoria conversacional (Fase 7)** | Preguntas de seguimiento con `conversation_id`: el historial (LRU por turnos y conversaciones) se inyecta en el LLM como mensajes de chat; disponible en API, CLI (`chat` multi-turno) y `query --conversation`. Las consultas conversacionales omiten la caché semántica. |
 | ⏱️ **Sincronización programada (Fase 7)** | Registra fuentes con un intervalo (`POST /sync` o `sync add`) y el planificador las re-ingesta solo (la ingesta incremental hace que no cambiar nada sea gratis). Estado persistente opcional a JSON compartido CLI/API. |
+| 🤖 **Agente multi-hop (Fase 8)** | Preguntas complejas en varios pasos: plan de sub-consultas (LLM o heurística determinista), búsquedas con **refinamiento** de consultas sin resultados, **fusión** de fragmentos (dedupe) y síntesis con citas sobre el ranking combinado. Pasos trazables en API, CLI (`ask`), MCP (`rag_ask`) y workbench (toggle «agente»). [docs/AGENT.md](docs/AGENT.md). |
 | 🗨️ **Mini chat UI (Fase 3)** | Chat web minimalista (ahora en `/chat`), autocontenido y sin CDNs, con citas y minutos visibles. |
 | 📚 **Colecciones múltiples (Fase 4)** | Bases de conocimiento aisladas (`legal`, `faq`, `energy`…) sobre un mismo despliegue: ingesta/consulta por colección en API, CLI y MCP. |
 | 🔄 **Jobs asíncronos (Fase 4)** | `POST /ingest/async` + polling en `GET /jobs/{id}` — ingesta de fuentes lentas (audio, video, lotes) sin bloquear al cliente. |
@@ -89,6 +90,10 @@ universal-rag query "¿y cómo se compara con LangChain?" --conversation demo  #
 universal-rag conversations                          # lista conversaciones vivas
 universal-rag conversations --show demo              # historial de una conversación
 universal-rag conversations --clear all              # borra todas
+
+# Fase 8: agente multi-hop (plan + pasos trazables)
+universal-rag ask "¿Qué mantenimiento necesita un panel solar y cuánto dura el inversor?"
+universal-rag ask "…" --max-steps 3 --planning heuristic --quiet
 
 # Chat interactivo multi-turno (memoria activada por defecto)
 universal-rag chat
@@ -166,9 +171,17 @@ curl -X POST localhost:8100/sync -H 'Content-Type: application/json' \
 curl localhost:8100/sync                              # jobs + último estado
 curl -X POST localhost:8100/sync/<job_id>/run         # ejecución inmediata
 curl -X DELETE localhost:8100/sync/<job_id>
+
+# Fase 8 — agente multi-hop (plan → búsquedas → síntesis con pasos trazables)
+curl -X POST localhost:8100/query/agent -H 'Content-Type: application/json' \
+     -d '{"question": "¿Qué mantenimiento necesita un panel solar y cuánto dura el inversor?"}'
+
+# Fase 8 — streaming del agente (SSE: plan → step* → synthesize → token* → done)
+curl -N -X POST localhost:8100/query/agent/stream -H 'Content-Type: application/json' \
+     -d '{"question": "…", "max_steps": 3, "planning": "heuristic"}'
 ```
 
-Endpoints: `/` (workbench) · `/chat` · `/health` · `/stats` · `/ingest` · `/ingest/text` · `/ingest/async` · `/jobs` · `/jobs/{id}` · `/query` · `/query/stream` (SSE) · `/conversations` · `/sync` · `/documents` · `/collections`.
+Endpoints: `/` (workbench) · `/chat` · `/health` · `/stats` · `/ingest` · `/ingest/text` · `/ingest/async` · `/jobs` · `/jobs/{id}` · `/query` · `/query/stream` (SSE) · `/query/agent` · `/query/agent/stream` (SSE, Fase 8) · `/conversations` · `/sync` · `/documents` · `/collections`.
 
 ### Como servidor MCP (Claude Desktop, Universal MCP…)
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "universal-rag"
-version = "0.7.0"
+version = "0.8.0"
 description = "Universal RAG: pipeline de Retrieval-Augmented Generation plugable — conectores universales (texto, archivos, URLs, audio, video, YouTube, Drive, S3, Notion, Confluence, SharePoint), embeddings locales, búsqueda híbrida BM25+vector con reranking, streaming SSE, caché semántica, memoria conversacional multi-turno, sincronización programada de fuentes, workbench web, colecciones múltiples, jobs asíncronos, auth por API key y respuestas con citas verificables."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -41,8 +41,12 @@ class Metrics:
             "requests": counters.get("requests", 0),
             "queries": counters.get("queries", 0),
             "queries_stream": counters.get("queries_stream", 0),
+            "queries_agent": counters.get("queries_agent", 0),
+            "queries_agent_stream": counters.get("queries_agent_stream", 0),
             "ingests": counters.get("ingests", 0),
             "ingests_async": counters.get("ingests_async", 0),
             "errors": counters.get("errors", 0),
             "documents_deleted": counters.get("documents_deleted", 0),
+            "sync_registered": counters.get("sync_registered", 0),
+            "sync_runs": counters.get("sync_runs", 0),
         }

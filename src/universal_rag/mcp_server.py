@@ -24,9 +24,11 @@ from universal_rag.core.pipeline import RAGPipeline
 
 INSTRUCTIONS = (
     "Universal RAG: ingesta universal de conocimiento (texto, archivos, URLs, "
-    "audio, video, YouTube, Drive) y preguntas con respuestas citadas. "
-    "Usa rag_query para preguntar; las respuestas incluyen citas verificables. "
-    "Las herramientas aceptan 'collection' para aislar bases de conocimiento."
+    "audio, video, YouTube, Drive, S3, Notion, Confluence, SharePoint) y "
+    "preguntas con respuestas citadas. Usa rag_query para preguntas simples y "
+    "rag_ask (agente multi-hop, Fase 8) para preguntas complejas: descompone la "
+    "pregunta en sub-consultas y devuelve pasos trazables. Las herramientas "
+    "aceptan 'collection' para aislar bases de conocimiento."
 )
 
 
@@ -85,6 +87,34 @@ def create_mcp_server(
             collection: colección donde consultar (opcional; 'default' si se omite).
         """
         return rag.get(collection).query(question, k=k).model_dump()
+
+    @mcp.tool()
+    def rag_ask(
+        question: str,
+        k: int | None = None,
+        collection: str | None = None,
+        max_steps: int | None = None,
+        planning: str | None = None,
+    ) -> dict[str, Any]:
+        """Responde una pregunta compleja con el agente multi-hop (Fase 8).
+
+        Descompone la pregunta en sub-consultas, busca cada una, fusiona los
+        fragmentos (dedupe) y sintetiza con citas sobre el ranking combinado.
+        Devuelve plan, pasos trazables y respuesta final.
+
+        Args:
+            question: pregunta compleja en lenguaje natural.
+            k: contextos fusionados finales (opcional).
+            collection: colección donde consultar (opcional; 'default' si se omite).
+            max_steps: máximo de sub-consultas, 1-10 (opcional).
+            planning: modo de planificación auto|heuristic|llm (opcional).
+        """
+        agent = rag.get(collection).agent
+        if max_steps is not None:
+            agent.max_steps = max_steps
+        if planning is not None:
+            agent.planning = planning
+        return agent.ask(question, k=k).model_dump()
 
     @mcp.tool()
     def rag_list_collections() -> list[dict[str, Any]]:

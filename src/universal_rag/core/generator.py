@@ -200,6 +200,29 @@ class OpenAICompatGenerator(BaseGenerator):
             yield text
 
     # ------------------------------------------------------------- internals
+    def chat(self, messages: list[dict[str, str]], *, temperature: float | None = None) -> str:
+        """Completación cruda sin contexto RAG (planificación del agente — Fase 8).
+
+        Acepta mensajes arbitrarios ``[{"role": …, "content": …}]`` y devuelve
+        solo el texto del primer choice. Útil para descomponer preguntas o
+        reformular consultas sin arrastrar fragmentos recuperados.
+        """
+        payload = {
+            "model": self.model,
+            "temperature": self.temperature if temperature is None else temperature,
+            "messages": messages,
+        }
+        try:
+            response = self._post(payload, self._headers())
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+        except httpx.HTTPError as exc:
+            raise GeneratorError(f"Error llamando al LLM ({self.base_url}): {exc}") from exc
+        except (KeyError, IndexError, TypeError) as exc:
+            raise GeneratorError(f"Respuesta del LLM con formato inesperado: {data!r}") from exc
+        return (content or "").strip()
+
     def _payload(
         self,
         question: str,

@@ -36,6 +36,11 @@ Fase 7 (memoria conversacional y sincronización)::
     RAG_SYNC_ENABLED=0                   # arranca el planificador de sincronización
     RAG_SYNC_TICK=5                      # granularidad del bucle (segundos)
     RAG_SYNC_STATE_PATH=                 # ruta JSON opcional para persistir jobs
+
+Fase 8 (agente multi-hop)::
+
+    RAG_AGENT_MAX_STEPS=3                # máximo de sub-consultas por pregunta
+    RAG_AGENT_PLANNING=auto              # auto | heuristic | llm
 """
 
 from __future__ import annotations
@@ -123,6 +128,11 @@ class Settings(BaseSettings):
     sync_enabled: bool = False  # arranca el planificador con la API
     sync_tick: float = Field(default=5.0, ge=0.5)  # granularidad del bucle (s)
     sync_state_path: Path | None = None  # JSON opcional para persistir los jobs
+
+    # --- Fase 8: agente multi-hop -------------------------------------------
+    agent_max_steps: int = Field(default=3, ge=1, le=10)  # máximo de sub-consultas
+    agent_planning: Literal["auto", "heuristic", "llm"] = "auto"
+    # auto = plan LLM si hay generador con chat(); heuristic en caso contrario
 
     # --- Conectores externos ---------------------------------------------
     # Directorios con conectores externos: <dir>/<nombre>/connector.py

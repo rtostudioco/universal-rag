@@ -14,14 +14,18 @@ Núcleo:
     CollectionManager          colecciones múltiples aisladas (Fase 4)
     JobManager / JobInfo       ingesta asíncrona por jobs (Fase 4)
     Metrics                    métricas de runtime (Fase 4)
+    RAGAgent                   agente multi-hop con plan y pasos trazables (Fase 8)
     RAGPipeline                orquestación completa: ingest -> query con citas
 """
 
+from universal_rag.core.agent import RAGAgent
 from universal_rag.core.collections import CollectionManager
 from universal_rag.core.config import Settings
 from universal_rag.core.jobs import JobInfo, JobManager, JobStatus
 from universal_rag.core.metrics import Metrics
 from universal_rag.core.models import (
+    AgentAnswer,
+    AgentStep,
     Answer,
     Chunk,
     Citation,
@@ -31,9 +35,11 @@ from universal_rag.core.models import (
 )
 from universal_rag.core.pipeline import RAGPipeline
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
+    "AgentAnswer",
+    "AgentStep",
     "Answer",
     "Chunk",
     "Citation",
@@ -44,6 +50,7 @@ __all__ = [
     "JobManager",
     "JobStatus",
     "Metrics",
+    "RAGAgent",
     "RAGPipeline",
     "RetrievedChunk",
     "Settings",

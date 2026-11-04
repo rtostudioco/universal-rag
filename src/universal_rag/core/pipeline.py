@@ -21,6 +21,7 @@ from universal_rag.core.embeddings import BaseEmbedder, create_embedder
 from universal_rag.core.generator import BaseGenerator, create_generator, tokenize_stream
 from universal_rag.core.memory import ConversationMemory
 from universal_rag.core.models import (
+    AgentAnswer,
     Answer,
     Citation,
     Document,
@@ -77,6 +78,7 @@ class RAGPipeline:
         self.retriever = Retriever(
             self.embedder, self.store, top_k=self.settings.top_k, settings=self.settings
         )
+        self._agent = None  # RAGAgent perezoso (Fase 8)
 
     # ------------------------------------------------------------------ INGEST
     def ingest(
@@ -322,6 +324,43 @@ class RAGPipeline:
         if self.retriever.reranker.name != "noop":
             label = f"{label}+{self.retriever.reranker.name}"
         return label
+
+    # ------------------------------------------------------------------ AGENT
+    @property
+    def agent(self):
+        """Agente multi-hop (Fase 8), construido perezosamente sobre este pipeline."""
+        if self._agent is None:
+            from universal_rag.core.agent import RAGAgent
+
+            self._agent = RAGAgent(self)
+        return self._agent
+
+    def agent_ask(
+        self,
+        question: str,
+        k: int | None = None,
+        where: dict[str, Any] | None = None,
+    ) -> AgentAnswer:
+        """Pregunta multi-hop: plan → búsquedas → síntesis con pasos trazables."""
+        return self.agent.ask(question, k=k, where=where)
+
+    def stream_agent_ask(
+        self,
+        question: str,
+        k: int | None = None,
+        where: dict[str, Any] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Versión en streaming de :meth:`agent_ask` (eventos plan/step/token/done)."""
+        return self.agent.stream_ask(question, k=k, where=where)
+
+    def build_citations(
+        self, answer_text: str, contexts: list[RetrievedChunk]
+    ) -> list[Citation]:
+        """Citas estructuradas a partir de los marcadores ``[n]`` del texto (público).
+
+        Lo usa también el agente (Fase 8) para citar sobre el ranking fusionado.
+        """
+        return self._build_citations(answer_text, contexts)
 
     def _build_citations(self, answer_text: str, contexts: list[RetrievedChunk]) -> list[Citation]:
         """Convierte los marcadores [n] del texto en citas estructuradas."""

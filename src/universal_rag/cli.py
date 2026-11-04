@@ -4,6 +4,7 @@ Comandos:
     ingest SOURCE    ingesta un archivo/URL/patrón
     text TEXT        ingesta texto directo
     query QUESTION   pregunta con respuesta y citas (--stream para streaming)
+    ask QUESTION    pregunta multi-hop con plan y pasos trazables (Fase 8)
     chat             chat interactivo multi-turno en la terminal (Fase 7)
     sync             sincronización programada de fuentes (add/list/run/remove)
     conversations    conversaciones vivas y su historial (Fase 7)
@@ -22,6 +23,7 @@ Fase 6: ``query --stream`` imprime la respuesta token a token y ``serve``
 expone el workbench web completo (chat streaming, documentos, ingesta, estado).
 Fase 7: memoria conversacional (``query --conversation``, ``chat`` multi-turno
 y ``conversations``) y sincronización programada (``sync add/list/run/remove``).
+Fase 8: ``ask`` — agente multi-hop con plan de sub-consultas y pasos trazables.
 """
 
 from __future__ import annotations
@@ -188,6 +190,78 @@ def _print_citations(answer) -> None:  # noqa: ANN001
                 citation.quote,
             )
         console.print(table)
+
+
+@app.command()
+def ask(
+    question: str = typer.Argument(..., help="Pregunta (compleja) en lenguaje natural"),
+    k: int | None = typer.Option(None, "--k", "-k", min=1, max=50, help="Contextos fusionados finales"),
+    collection: str | None = typer.Option(None, "--collection", "-C", help="Colección donde consultar"),
+    max_steps: int | None = typer.Option(
+        None, "--max-steps", min=1, max=10, help="Máximo de sub-consultas (default: RAG_AGENT_MAX_STEPS)"
+    ),
+    planning: str | None = typer.Option(
+        None, "--planning", help="Modo de planificación: auto | heuristic | llm"
+    ),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Oculta la tabla de pasos"),
+) -> None:
+    """Pregunta con el agente multi-hop (Fase 8): plan → búsquedas → síntesis.
+
+    El agente descompone preguntas complejas en sub-consultas, fusiona los
+    fragmentos recuperados (dedupe por chunk) y sintetiza una respuesta con
+    citas sobre el ranking combinado. Cada paso queda trazado.
+    """
+    pipeline = _pipeline(collection)
+    agent = pipeline.agent
+    if max_steps is not None:
+        agent.max_steps = max_steps
+    if planning is not None:
+        if planning not in {"auto", "heuristic", "llm"}:
+            console.print(f"[red]✗ Planning inválido:[/red] {planning} (auto|heuristic|llm)")
+            raise typer.Exit(code=1)
+        agent.planning = planning
+    result = agent.ask(question, k=k)
+    if not quiet:
+        table = Table(title=f"Plan del agente · planificador: {result.planner}")
+        table.add_column("#", justify="right", style="cyan")
+        table.add_column("Paso", style="magenta")
+        table.add_column("Consulta", overflow="fold")
+        table.add_column("Hallazgos", justify="right", style="green")
+        table.add_column("Nota", overflow="fold")
+        for step in result.steps:
+            table.add_row(
+                str(step.step),
+                step.action,
+                step.query or "—",
+                str(step.found),
+                step.note or "—",
+            )
+        console.print(table)
+    console.print(Panel(result.answer, title=f"Agente · {result.model} · {result.latency_ms:.0f} ms"))
+    _print_citations_from_citations(result)
+
+
+def _print_citations_from_citations(result) -> None:  # noqa: ANN001
+    """Tabla de citas para AgentAnswer (reutiliza el formato de Answer)."""
+    if not result.citations:
+        return
+    table = Table(title="Fuentes citadas (ranking fusionado)", show_lines=False)
+    table.add_column("#", justify="right", style="cyan")
+    table.add_column("Fuente", style="magenta")
+    table.add_column("Título")
+    table.add_column("Momento", style="green", overflow="fold")
+    table.add_column("Score", justify="right", style="green")
+    table.add_column("Cita", overflow="fold")
+    for i, citation in enumerate(result.citations, start=1):
+        table.add_row(
+            str(i),
+            citation.source,
+            citation.title or "—",
+            citation.timestamp or "—",
+            f"{citation.score:.3f}",
+            citation.quote,
+        )
+    console.print(table)
 
 
 @app.command()

@@ -9,7 +9,7 @@ produce :class:`RetrievedChunk`; la generación produce :class:`Answer` con
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -87,3 +87,28 @@ class IngestResult(BaseModel):
     unchanged: int = 0  # documentos sin cambios saltados (ingesta incremental — Fase 4)
     document_ids: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+
+
+class AgentStep(BaseModel):
+    """Un paso trazable del agente RAG (Fase 8): plan, búsqueda, refinamiento o síntesis."""
+
+    step: int  # 0 = planificación; 1..n = búsquedas; -1 = refinamiento
+    action: Literal["plan", "search", "refine", "synthesize"]
+    query: str | None = None  # sub-consulta ejecutada (search/refine)
+    found: int = 0  # fragmentos recuperados en el paso
+    note: str | None = None  # detalle opcional (p. ej. "reformulada", "sin resultados")
+
+
+class AgentAnswer(BaseModel):
+    """Respuesta del agente RAG (Fase 8): síntesis multi-hop con trazabilidad de pasos."""
+
+    question: str
+    answer: str
+    citations: list[Citation] = Field(default_factory=list)
+    model: str  # generador usado en la síntesis
+    planner: str = "heuristic"  # "heuristic" | nombre del modelo que planificó
+    steps: list[AgentStep] = Field(default_factory=list)
+    sub_queries: list[str] = Field(default_factory=list)
+    context_count: int = 0  # contextos fusionados únicos usados en la síntesis
+    retrieval: str | None = None
+    latency_ms: float = 0.0
