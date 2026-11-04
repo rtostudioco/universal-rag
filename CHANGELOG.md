@@ -3,6 +3,47 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y versionado con [SemVer](https://semver.org/lang/es/).
 
+## [0.7.0] — Fase 7: Conectores empresariales, memoria conversacional y sincronización
+
+### Añadido
+- **Conector `confluence`** — espacios (`confluence://space/KEY`), páginas
+  (`confluence://page/ID`) y búsquedas **CQL** (`confluence://cql/…`) vía REST
+  v1; URLs de `atlassian.net` y `/display/` detectadas automáticamente. Auth
+  **Basic** (email + token, Cloud) o **Bearer** (PAT, Server/DC). El formato de
+  almacenamiento XHTML se convierte a texto (encabezados, listas, tablas y
+  macros de código).
+- **Conector `sharepoint`** — Microsoft Graph con **client credentials**
+  (Entra ID, `Sites.Read.All`): sitio → librería → listado paginado →
+  descarga → extracción reutilizando las rutinas del conector `file`
+  (TXT/MD/CSV/PDF/DOCX). Filtro de extensiones, carpetas opcionales
+  (`folder=`) y token cacheado.
+- **Memoria conversacional multi-turno** (`ConversationMemory`): doble LRU
+  thread-safe (turnos por conversación + conversaciones vivas).
+  `query(…, conversation_id=…)` en Python, `conversation_id` en `/query` y
+  `/query/stream`, `--conversation` en CLI y **`chat` multi-turno por
+  defecto**; el historial se inyecta al LLM como mensajes `user`/`assistant`
+  (firma clásica de generadores de terceros intacta). Las consultas
+  conversacionales **omiten la caché semántica**. Endpoints
+  `GET/DELETE /conversations` (+ historial por ID).
+- **Sincronización programada de fuentes** (`SyncScheduler`): `POST /sync`
+  (o `sync add` en CLI) registra fuentes con intervalo; re-ingesta en un hilo
+  de fondo opt-in (`RAG_SYNC_ENABLED=1`) o bajo demanda
+  (`POST /sync/{id}/run`, `sync run`). Estado persistente opcional a JSON
+  (`RAG_SYNC_STATE_PATH`) compartible entre CLI y API. La ingesta incremental
+  (F4) hace que re-ingerir sin cambios sea gratuito.
+- CLI: `sync add/list/run/remove`, `conversations [--show|--clear]`,
+  `ingest -o clave=valor` (opciones de conector repetibles).
+
+### Cambiado
+- Compatibilidad total hacia atrás: los generadores custom con la firma
+  clásica siguen funcionando.
+
+### Tests y docs
+- **87 tests nuevos (393 total)** con dobles de Confluence/Microsoft Graph
+  vía `httpx.MockTransport`.
+- Docs actualizadas: README (features, CLI, API, config), `.env.example`,
+  `docs/ARCHITECTURE.md`.
+
 ## [0.6.0] — Fase 6: Streaming, caché semántica y workbench web
 
 ### Añadido
